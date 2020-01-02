@@ -60,6 +60,7 @@ int      tasksPerNode = 0;           /* tasks per node */
 int      verbose = VERBOSE_0;        /* verbose output */
 MPI_Comm testComm;
 MPI_Comm mpi_comm_world;
+MPI_Comm mpi_comm_nozero;
 FILE * out_logfile;
 FILE * out_resultfile;
 enum OutputFormat_t outputFormat;

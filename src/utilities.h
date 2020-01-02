@@ -25,6 +25,7 @@ extern int tasksPerNode;
 extern int verbose;
 extern MPI_Comm testComm;
 extern MPI_Comm mpi_comm_world;
+extern MPI_Comm mpi_comm_nozero;
 extern FILE * out_logfile;
 extern FILE * out_resultfile;
 extern enum OutputFormat_t outputFormat;  /* format of the output */

@@ -113,6 +113,14 @@ int ior_main(int argc, char **argv)
               "cannot get number of tasks");
     MPI_CHECK(MPI_Comm_rank(mpi_comm_world, &rank), "cannot get rank");
 
+    // ADD BEGIN
+    MPI_Group world_group, nozero_group;
+    const int exgroup[1] = {0};
+    MPI_Comm_group(mpi_comm_world, &world_group);
+    MPI_Group_excl(world_group, 1, exgroup, &nozero_group);
+    MPI_Comm_create(mpi_comm_world, nozero_group, &mpi_comm_nozero);
+    // ADD END
+
     PrintEarlyHeader();
 
     /* set error-handling */
