@@ -115,7 +115,7 @@ int ior_main(int argc, char **argv)
 
     // ADD BEGIN
     MPI_Group world_group, nozero_group;
-    const int exgroup[1] = {0};
+    const int exgroup[1] = {numTasksWorld - 1};
     MPI_Comm_group(mpi_comm_world, &world_group);
     MPI_Group_excl(world_group, 1, exgroup, &nozero_group);
     MPI_Comm_create(mpi_comm_world, nozero_group, &mpi_comm_nozero);
@@ -1155,17 +1155,21 @@ static void TestIoSys(IOR_test_t *test)
                 }
                 params->numTasks = numTasksWorld;
         }
+        /*
         MPI_CHECK(MPI_Comm_group(mpi_comm_world, &orig_group),
                   "MPI_Comm_group() error");
-        range[0] = 0;                     /* first rank */
-        range[1] = params->numTasks - 1;  /* last rank */
-        range[2] = 1;                     /* stride */
+        range[0] = 0;
+        range[1] = params->numTasks - 1;
+        range[2] = 1;
         MPI_CHECK(MPI_Group_range_incl(orig_group, 1, &range, &new_group),
                   "MPI_Group_range_incl() error");
         MPI_CHECK(MPI_Comm_create(mpi_comm_world, new_group, &testComm),
                   "MPI_Comm_create() error");
         MPI_CHECK(MPI_Group_free(&orig_group), "MPI_Group_Free() error");
         MPI_CHECK(MPI_Group_free(&new_group), "MPI_Group_Free() error");
+        */
+        MPI_CHECK(MPI_Comm_dup(mpi_comm_world, &testComm),
+                  "MPI_Comm_dup() error");
         params->testComm = testComm;
         if (testComm == MPI_COMM_NULL) {
                 /* tasks not in the group do not participate in this test */
