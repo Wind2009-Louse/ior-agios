@@ -2164,7 +2164,7 @@ void mdtest_init_args(){
 mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * world_out) {
     testComm = world_com;
     out_logfile = world_out;
-    mpi_comm_world = world_com;
+    mpi_comm_iorworld = world_com;
 
     init_clock();
 

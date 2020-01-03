@@ -56,10 +56,10 @@ IOR_test_t * ior_run(int argc, char **argv, MPI_Comm world_com, FILE * world_out
         IOR_test_t *tptr;
         out_logfile = world_out;
         out_resultfile = world_out;
-        mpi_comm_world = world_com;
+        mpi_comm_iorworld = world_com;
 
-        MPI_CHECK(MPI_Comm_size(mpi_comm_world, &numTasksWorld), "cannot get number of tasks");
-        MPI_CHECK(MPI_Comm_rank(mpi_comm_world, &rank), "cannot get rank");
+        MPI_CHECK(MPI_Comm_size(mpi_comm_iorworld, &numTasksWorld), "cannot get number of tasks");
+        MPI_CHECK(MPI_Comm_rank(mpi_comm_iorworld, &rank), "cannot get rank");
         PrintEarlyHeader();
 
         /* setup tests, and validate parameters */
@@ -113,14 +113,23 @@ int ior_main(int argc, char **argv)
               "cannot get number of tasks");
     MPI_CHECK(MPI_Comm_rank(mpi_comm_world, &rank), "cannot get rank");
 
+    // ADD BEGIN
+    MPI_Group world_group, ior_group;
+    const int exgroup[1] = {numTasksWorld - 1};
+    MPI_Comm_group(mpi_comm_world, &world_group);
+    MPI_Group_excl(world_group, 1, exgroup, &ior_group);
+    MPI_Comm_create(mpi_comm_world, ior_group, &mpi_comm_iorworld);
+    numTasksWorld -= 1;
+    // ADD END
+
     PrintEarlyHeader();
 
     /* set error-handling */
-    /*MPI_CHECK(MPI_Errhandler_set(mpi_comm_world, MPI_ERRORS_RETURN),
+    /*MPI_CHECK(MPI_Errhandler_set(mpi_comm_iorworld, MPI_ERRORS_RETURN),
        "cannot set errhandler"); */
 
     /* setup tests, and validate parameters */
-    InitTests(tests_head, mpi_comm_world);
+    InitTests(tests_head, mpi_comm_iorworld);
     verbose = tests_head->params.verbose;
 
     PrintHeader(argc, argv);
@@ -195,7 +204,7 @@ void init_IOR_Param_t(IOR_param_t * p)
         p->transferSize = 262144;
         p->randomSeed = -1;
         p->incompressibleSeed = 573;
-        p->testComm = mpi_comm_world;
+        p->testComm = mpi_comm_iorworld;
         p->setAlignment = 1;
         p->lustre_start_ost = -1;
 
@@ -942,7 +951,7 @@ static void InitTests(IOR_test_t *tests, MPI_Comm com)
         /*
          * Since there is no guarantee that anyone other than
          * task 0 has the environment settings for the hints, pass
-         * the hint=value pair to everyone else in mpi_comm_world
+         * the hint=value pair to everyone else in mpi_comm_iorworld
          */
         DistributeHints();
 
@@ -965,7 +974,7 @@ static void InitTests(IOR_test_t *tests, MPI_Comm com)
         init_clock();
 
         /* seed random number generator */
-        SeedRandGen(mpi_comm_world);
+        SeedRandGen(mpi_comm_iorworld);
 }
 
 /*
@@ -1046,7 +1055,7 @@ static void file_hits_histogram(IOR_param_t *params)
         }
 
         MPI_CHECK(MPI_Gather(&rankOffset, 1, MPI_INT, rankoffs,
-                             1, MPI_INT, 0, mpi_comm_world),
+                             1, MPI_INT, 0, mpi_comm_iorworld),
                   "MPI_Gather error");
 
         if (rank != 0)
@@ -1147,21 +1156,21 @@ static void TestIoSys(IOR_test_t *test)
                 }
                 params->numTasks = numTasksWorld;
         }
-        MPI_CHECK(MPI_Comm_group(mpi_comm_world, &orig_group),
+        MPI_CHECK(MPI_Comm_group(mpi_comm_iorworld, &orig_group),
                   "MPI_Comm_group() error");
         range[0] = 0;                     /* first rank */
         range[1] = params->numTasks - 1;  /* last rank */
         range[2] = 1;                     /* stride */
         MPI_CHECK(MPI_Group_range_incl(orig_group, 1, &range, &new_group),
                   "MPI_Group_range_incl() error");
-        MPI_CHECK(MPI_Comm_create(mpi_comm_world, new_group, &testComm),
+        MPI_CHECK(MPI_Comm_create(mpi_comm_iorworld, new_group, &testComm),
                   "MPI_Comm_create() error");
         MPI_CHECK(MPI_Group_free(&orig_group), "MPI_Group_Free() error");
         MPI_CHECK(MPI_Group_free(&new_group), "MPI_Group_Free() error");
         params->testComm = testComm;
         if (testComm == MPI_COMM_NULL) {
                 /* tasks not in the group do not participate in this test */
-                MPI_CHECK(MPI_Barrier(mpi_comm_world), "barrier error");
+                MPI_CHECK(MPI_Barrier(mpi_comm_iorworld), "barrier error");
                 return;
         }
         if (rank == 0 && verbose >= VERBOSE_1) {
@@ -1473,7 +1482,7 @@ static void TestIoSys(IOR_test_t *test)
         }
 
         /* Sync with the tasks that did not participate in this test */
-        MPI_CHECK(MPI_Barrier(mpi_comm_world), "barrier error");
+        MPI_CHECK(MPI_Barrier(mpi_comm_iorworld), "barrier error");
 
 }
 
