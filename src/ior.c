@@ -128,39 +128,47 @@ int ior_main(int argc, char **argv)
     /*MPI_CHECK(MPI_Errhandler_set(mpi_comm_iorworld, MPI_ERRORS_RETURN),
        "cannot set errhandler"); */
 
-    /* setup tests, and validate parameters */
-    InitTests(tests_head, mpi_comm_iorworld);
-    verbose = tests_head->params.verbose;
+    if (rank != numTasksWorld){
 
-    PrintHeader(argc, argv);
+        /* setup tests, and validate parameters */
+        InitTests(tests_head, mpi_comm_iorworld);
+        verbose = tests_head->params.verbose;
 
-    /* perform each test */
-    for (tptr = tests_head; tptr != NULL; tptr = tptr->next) {
-            verbose = tptr->params.verbose;
-            if (rank == 0 && verbose >= VERBOSE_0) {
-                    ShowTestStart(&tptr->params);
-            }
+        PrintHeader(argc, argv);
 
-            // This is useful for trapping a running MPI process.  While
-            // this is sleeping, run the script 'testing/hdfs/gdb.attach'
-            if (verbose >= VERBOSE_4) {
-                    fprintf(out_logfile, "\trank %d: sleeping\n", rank);
-                    sleep(5);
-                    fprintf(out_logfile, "\trank %d: awake.\n", rank);
-            }
-            TestIoSys(tptr);
-            ShowTestEnd(tptr);
+        /* perform each test */
+        for (tptr = tests_head; tptr != NULL; tptr = tptr->next) {
+                verbose = tptr->params.verbose;
+                if (rank == 0 && verbose >= VERBOSE_0) {
+                        ShowTestStart(&tptr->params);
+                }
+
+                // This is useful for trapping a running MPI process.  While
+                // this is sleeping, run the script 'testing/hdfs/gdb.attach'
+                if (verbose >= VERBOSE_4) {
+                        fprintf(out_logfile, "\trank %d: sleeping\n", rank);
+                        sleep(5);
+                        fprintf(out_logfile, "\trank %d: awake.\n", rank);
+                }
+                TestIoSys(tptr);
+                ShowTestEnd(tptr);
+        }
+    
+    
+        if (verbose < 0)
+                /* always print final summary */
+                verbose = 0;
+        PrintLongSummaryAllTests(tests_head);
+
+        /* display finish time */
+        PrintTestEnds();
+
+        DestroyTests(tests_head);
+    
+    } else {
+        // agios
+        
     }
-
-    if (verbose < 0)
-            /* always print final summary */
-            verbose = 0;
-    PrintLongSummaryAllTests(tests_head);
-
-    /* display finish time */
-    PrintTestEnds();
-
-    DestroyTests(tests_head);
 
     MPI_CHECK(MPI_Finalize(), "cannot finalize MPI");
 
@@ -587,10 +595,10 @@ void DistributeHints(void)
         }
 
         MPI_CHECK(MPI_Bcast(&hintCount, sizeof(hintCount), MPI_BYTE,
-                            0, MPI_COMM_WORLD), "cannot broadcast hints");
+                            0, mpi_comm_iorworld), "cannot broadcast hints");
         for (i = 0; i < hintCount; i++) {
                 MPI_CHECK(MPI_Bcast(&hint[i], MAX_STR, MPI_BYTE,
-                                    0, MPI_COMM_WORLD),
+                                    0, mpi_comm_iorworld),
                           "cannot broadcast hints");
                 strcpy(fullHint, hint[i]);
                 strcpy(hintVariable, strtok(fullHint, "="));
