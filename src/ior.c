@@ -131,11 +131,9 @@ int ior_main(int argc, char **argv)
     /*MPI_CHECK(MPI_Errhandler_set(mpi_comm_iorworld, MPI_ERRORS_RETURN),
        "cannot set errhandler"); */
 
-    printf("Before judgement.\n");
     if (rank == numTasksWorld){
         // do agios work
         run_agios();
-        printf("Out of agios.\n");
     } else {
         // do ior work
         /* setup tests, and validate parameters */

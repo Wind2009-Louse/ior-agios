@@ -21,7 +21,7 @@ ior_LDADD = libaiori.a
 ior_CPPFLAGS =
 
 extraSOURCES   +=
-extraCPPFLAGS  += -L$HOME/agios/install/include
+extraCPPFLAGS  += -I$HOME/agios/install/include
 extraLDFLAGS   += -L$HOME/agios/install/lib
 extraLDADD     += -lagios -lpthread
 
