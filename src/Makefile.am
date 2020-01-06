@@ -18,7 +18,9 @@ extraCPPFLAGS =
 ior_SOURCES = ior-main.c
 ior_LDFLAGS =
 ior_LDADD = libaiori.a
-ior_CPPFLAGS =
+ior_CPPFLAGS = -lphread
+
+extraLDADD += -lagios
 
 mdtest_SOURCES = mdtest-main.c
 mdtest_LDFLAGS =

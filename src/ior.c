@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>           /* struct stat */
 #include <time.h>
+#include <pthread.h>
 
 #ifndef _WIN32
 # include <sys/time.h>           /* gettimeofday() */
@@ -50,6 +51,8 @@ static void TestIoSys(IOR_test_t *);
 static void ValidateTests(IOR_param_t *);
 static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, void *fd, int access, IOR_io_buffers* ioBuffers);
 static void WriteTimes(IOR_param_t *, double **, int, int);
+
+static void run_agios();
 
 IOR_test_t * ior_run(int argc, char **argv, MPI_Comm world_com, FILE * world_out){
         IOR_test_t *tests_head;
@@ -128,8 +131,11 @@ int ior_main(int argc, char **argv)
     /*MPI_CHECK(MPI_Errhandler_set(mpi_comm_iorworld, MPI_ERRORS_RETURN),
        "cannot set errhandler"); */
 
-    if (rank != numTasksWorld){
-
+    if (rank == numTasksWorld){
+        // do agios work
+        run_agios();
+    } else {
+        // do ior work
         /* setup tests, and validate parameters */
         InitTests(tests_head, mpi_comm_iorworld);
         verbose = tests_head->params.verbose;
@@ -164,10 +170,6 @@ int ior_main(int argc, char **argv)
         PrintTestEnds();
 
         DestroyTests(tests_head);
-    
-    } else {
-        // agios
-        
     }
 
     MPI_CHECK(MPI_Finalize(), "cannot finalize MPI");
@@ -1999,4 +2001,74 @@ WriteTimes(IOR_param_t * test, double **timer, int iteration, int writeOrRead)
                         test->id, iteration, (int)rank, timer[i][iteration],
                         timerName);
         }
+}
+
+// #########################################################
+
+int32_t g_processed_reqnb=0; /**< the number of requests already processed and released rfom agios */
+pthread_mutex_t g_processed_reqnb_mutex=PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_processed_reqnb_cond=PTHREAD_COND_INITIALIZER;
+int32_t g_generated_reqnb; /**< the total number of generated requests */
+int32_t g_reqnb_perthread; /**< the number pf requests generated per thread */
+int32_t g_thread_nb; /**< number of thread */
+int32_t g_queue_ids; /**< number of possible ids provided with agios_add_request to identify different servers or applications to SW and TWINS */
+
+struct request_info_t {
+	char fileid[100];
+	int32_t len;
+	int64_t offset;
+	int32_t type;
+	int32_t process_time;
+	int32_t time_before;
+	int32_t queue_id;
+};
+struct request_info_t *requests; /**< the list containing ALL requests generated in this test */
+pthread_barrier_t test_start;
+pthread_t *processing_threads;
+
+void inc_processed_reqnb()
+{
+	pthread_mutex_lock(&g_processed_reqnb_mutex);
+	g_processed_reqnb++;
+	if(g_processed_reqnb >= g_generated_reqnb)
+		pthread_cond_signal(&g_processed_reqnb_cond);
+	pthread_mutex_unlock(&g_processed_reqnb_mutex);
+}
+
+void * process_thr(void *arg)
+{
+	struct request_info_t *req = (struct request_info_t *)arg;
+	struct timespec timeout;
+
+	timeout.tv_sec = req->process_time / 1000000000L;
+	timeout.tv_nsec = req->process_time % 1000000000L;
+	nanosleep(&timeout, NULL);
+	if (!agios_release_request(req->fileid, req->type, req->len, req->offset)) {
+		printf("PANIC! release request failed!\n");
+	}
+	inc_processed_reqnb();	
+	return 0;
+}
+void * test_process(int64_t req_id)
+{
+	//create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
+	int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thr, (void *)&requests[req_id]);		
+	if (ret != 0) {
+		printf("PANIC! Could not create processing thread for request %ld\n", req_id);
+		inc_processed_reqnb(); //so the program can end
+	}
+	return 0;
+}
+
+static void run_agios(){
+        /*start AGIOS*/
+	if (!agios_init(test_process, NULL, "/tmp/agios.conf", g_queue_ids)) {
+		printf("PANIC! Could not initialize AGIOS!\n");
+		return;
+	}
+
+        
+        //end agios, wait for the end of all threads, free stuff
+	agios_exit();
+        printf("Agios run and exit successfully.\n");
 }
