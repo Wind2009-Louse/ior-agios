@@ -98,6 +98,7 @@ enum OutputFormat_t{
 #define READ               2
 #define READCHECK          3
 #define CHECK              4
+#define FINISH_RUNNING     5
 
 /* verbosity settings */
 #define VERBOSE_0          0

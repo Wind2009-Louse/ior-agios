@@ -52,6 +52,14 @@ static void ValidateTests(IOR_param_t *);
 static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, void *fd, int access, IOR_io_buffers* ioBuffers);
 static void WriteTimes(IOR_param_t *, double **, int, int);
 
+typedef struct agios_pack{
+    int packtype;
+    long long int offset;
+    long long int len;
+    char filename[127];
+} agios_pack_t;
+static int pack_msg(char* packbuffer, agios_pack_t agios_t);
+static agios_pack_t unpack_msg(char* packbuffer);
 static void run_agios();
 
 IOR_test_t * ior_run(int argc, char **argv, MPI_Comm world_com, FILE * world_out){
@@ -159,8 +167,18 @@ int ior_main(int argc, char **argv)
                 TestIoSys(tptr);
                 ShowTestEnd(tptr);
         }
-    
-    
+
+        // send FINISH
+        agios_pack_t final_msg;
+        final_msg.packtype = 5;
+        final_msg.offset = 0;
+        final_msg.len = 0;
+        strcpy(final_msg.filename,"");
+
+        char packed_buff[150];
+        pack_msg(packed_buff, final_msg);
+        MPI_Send(packed_buff, 150, MPI_PACKED, numTasksWorld, 0, MPI_COMM_WORLD);
+
         if (verbose < 0)
                 /* always print final summary */
                 verbose = 0;
@@ -2018,13 +2036,30 @@ struct request_info_t {
 	int32_t len;
 	int64_t offset;
 	int32_t type;
-	int32_t process_time;
-	int32_t time_before;
 	int32_t queue_id;
 };
 struct request_info_t *requests; /**< the list containing ALL requests generated in this test */
 pthread_barrier_t test_start;
 pthread_t *processing_threads;
+
+static int pack_msg(char* packbuffer, agios_pack_t agios_t){
+    int pos = 0;
+    MPI_Pack(&agios_t.packtype, 1, MPI_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.offset, 1, MPI_LONG_LONG_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.len, 1, MPI_LONG_LONG_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
+    MPI_Pack(agios_t.filename, 128, MPI_CHAR, packbuffer, 150, &pos, MPI_COMM_WORLD);
+    return pos;
+}
+
+static agios_pack_t unpack_msg(char* packbuffer){
+    agios_pack_t result;
+    int pos = 0;
+    MPI_Unpack(packbuffer, 150, &pos, &result.packtype, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, 150, &pos, &result.offset, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, 150, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, 150, &pos, result.filename, 128, MPI_CHAR, MPI_COMM_WORLD);
+    return result;
+}
 
 void inc_processed_reqnb()
 {
@@ -2038,11 +2073,9 @@ void inc_processed_reqnb()
 void * process_thr(void *arg)
 {
 	struct request_info_t *req = (struct request_info_t *)arg;
-	struct timespec timeout;
 
-	timeout.tv_sec = req->process_time / 1000000000L;
-	timeout.tv_nsec = req->process_time % 1000000000L;
-	nanosleep(&timeout, NULL);
+        // process
+
 	if (!agios_release_request(req->fileid, req->type, req->len, req->offset)) {
 		printf("PANIC! release request failed!\n");
 	}
@@ -2067,8 +2100,58 @@ static void run_agios(){
 		return;
 	}
 
+        // wait for msg
+        MPI_Request* request_list = (MPI_Request*)malloc(sizeof(MPI_Request) * numTasksWorld);
+        // recv buffer
+        char** total_buffer = (char**)malloc(sizeof(char*) * numTasksWorld);
+        // exit result
+        int* result_list = (int*)malloc(sizeof(int) * numTasksWorld);
+        int running_count = numTasksWorld;
+        MPI_Status status;
+
+        // init& recv
+        for (int i = 0; i < numTasksWorld; ++ i){
+            char* buffer = malloc(sizeof(char*) * 150);
+            total_buffer[i] = buffer;
+            result_list[i] = 0;
+            MPI_Irecv(total_buffer[i], 150, MPI_PACKED, i, 0, MPI_COMM_WORLD, &request_list[i]);
+        }
+
+        // round-robin
+        while(running_count){
+            for (int pro_id = 0; pro_id < numTasksWorld; ++ pro_id){
+                // skip if exit
+                if (result_list[pro_id] == 1) continue;
+
+                // check whether recv
+                int flag = 0;
+                MPI_Test(&request_list[pro_id], &flag, &status);
+                if (!flag) continue;
+
+                // unpack recv pack
+                agios_pack_t unpacked_result;
+                unpacked_result = unpack_msg(total_buffer[pro_id]);
+
+                // test
+                printf("Recv from %d: (%d, %lld, %lld, %s)\n", pro_id, unpacked_result.packtype, unpacked_result.offset, unpacked_result.len, unpacked_result.filename);
+                fflush(stdout);
+
+                // exit judge
+                if (unpacked_result.packtype == 5){
+                    result_list[pro_id] = 1;
+                    running_count--;
+                } else {
+                    MPI_Irecv(total_buffer[pro_id], 150, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &request_list[pro_id]);
+                }
+            }
+        }
+
+        free(request_list);
+        free(result_list);
+        free(total_buffer);
 
         //end agios, wait for the end of all threads, free stuff
 	agios_exit();
+
         printf("Agios run and exit successfully.\n");
 }
