@@ -247,8 +247,17 @@ typedef struct agios_pack{
     int packtype;
     long long int offset;
     long long int len;
-    char filename[127];
+    char filename[100];
 } agios_pack_t;
+
+typedef struct request_info {
+	char filename[100];
+	int64_t len;
+	int64_t offset;
+	int32_t type;
+	int32_t queue_id;
+} request_info_t;
+
 int pack_msg(char* packbuffer, agios_pack_t agios_t);
 agios_pack_t unpack_msg(char* packbuffer);
 void run_agios();
