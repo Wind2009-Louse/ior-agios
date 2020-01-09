@@ -2160,7 +2160,7 @@ void run_agios(){
                         agios_requests[recv_count].type,
                         agios_requests[recv_count].offset,
                         agios_requests[recv_count].len, 
-                        recv_count++,
+                        recv_count,
                         pro_id)) {
                         printf("PANIC! Agios_add_request failed!\n");
                 }
