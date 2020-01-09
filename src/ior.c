@@ -52,16 +52,6 @@ static void ValidateTests(IOR_param_t *);
 static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, void *fd, int access, IOR_io_buffers* ioBuffers);
 static void WriteTimes(IOR_param_t *, double **, int, int);
 
-typedef struct agios_pack{
-    int packtype;
-    long long int offset;
-    long long int len;
-    char filename[127];
-} agios_pack_t;
-static int pack_msg(char* packbuffer, agios_pack_t agios_t);
-static agios_pack_t unpack_msg(char* packbuffer);
-static void run_agios();
-
 IOR_test_t * ior_run(int argc, char **argv, MPI_Comm world_com, FILE * world_out){
         IOR_test_t *tests_head;
         IOR_test_t *tptr;
@@ -2032,7 +2022,7 @@ int32_t g_thread_nb; /**< number of thread */
 int32_t g_queue_ids; /**< number of possible ids provided with agios_add_request to identify different servers or applications to SW and TWINS */
 
 struct request_info_t {
-	char fileid[100];
+	char filename[100];
 	int32_t len;
 	int64_t offset;
 	int32_t type;
@@ -2042,7 +2032,8 @@ struct request_info_t *requests; /**< the list containing ALL requests generated
 pthread_barrier_t test_start;
 pthread_t *processing_threads;
 
-static int pack_msg(char* packbuffer, agios_pack_t agios_t){
+// pack message into char
+int pack_msg(char* packbuffer, agios_pack_t agios_t){
     int pos = 0;
     MPI_Pack(&agios_t.packtype, 1, MPI_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.offset, 1, MPI_LONG_LONG_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
@@ -2051,7 +2042,8 @@ static int pack_msg(char* packbuffer, agios_pack_t agios_t){
     return pos;
 }
 
-static agios_pack_t unpack_msg(char* packbuffer){
+// unpack message from char to agios_pack_t
+agios_pack_t unpack_msg(char* packbuffer){
     agios_pack_t result;
     int pos = 0;
     MPI_Unpack(packbuffer, 150, &pos, &result.packtype, 1, MPI_INT, MPI_COMM_WORLD);
@@ -2070,22 +2062,25 @@ void inc_processed_reqnb()
 	pthread_mutex_unlock(&g_processed_reqnb_mutex);
 }
 
-void * process_thr(void *arg)
+// call for request
+void * process_thread(void *arg)
 {
 	struct request_info_t *req = (struct request_info_t *)arg;
 
         // process
 
-	if (!agios_release_request(req->fileid, req->type, req->len, req->offset)) {
+	if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
 		printf("PANIC! release request failed!\n");
 	}
 	inc_processed_reqnb();	
 	return 0;
 }
-void * test_process(int64_t req_id)
+
+// called when call agios_add_request
+void * process_on_addrequest(int64_t req_id)
 {
 	//create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
-	int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thr, (void *)&requests[req_id]);		
+	int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thread, (void *)&requests[req_id]);		
 	if (ret != 0) {
 		printf("PANIC! Could not create processing thread for request %ld\n", req_id);
 		inc_processed_reqnb(); //so the program can end
@@ -2093,15 +2088,17 @@ void * test_process(int64_t req_id)
 	return 0;
 }
 
-static void run_agios(){
+void run_agios(){
+        int recv_count = 0;
         /*start AGIOS*/
-	if (!agios_init(test_process, NULL, "/tmp/agios.conf", g_queue_ids)) {
+        // print *Error reading agios config file*
+	if (!agios_init(process_on_addrequest, NULL, "", g_queue_ids)) {
 		printf("PANIC! Could not initialize AGIOS!\n");
 		return;
 	}
 
         // wait for msg
-        MPI_Request* request_list = (MPI_Request*)malloc(sizeof(MPI_Request) * numTasksWorld);
+        MPI_Request* mpi_request_list = (MPI_Request*)malloc(sizeof(MPI_Request) * numTasksWorld);
         // recv buffer
         char** total_buffer = (char**)malloc(sizeof(char*) * numTasksWorld);
         // exit result
@@ -2114,7 +2111,7 @@ static void run_agios(){
             char* buffer = malloc(sizeof(char*) * 150);
             total_buffer[i] = buffer;
             result_list[i] = 0;
-            MPI_Irecv(total_buffer[i], 150, MPI_PACKED, i, 0, MPI_COMM_WORLD, &request_list[i]);
+            MPI_Irecv(total_buffer[i], 150, MPI_PACKED, i, 0, MPI_COMM_WORLD, &mpi_request_list[i]);
         }
 
         // round-robin
@@ -2125,7 +2122,7 @@ static void run_agios(){
 
                 // check whether recv
                 int flag = 0;
-                MPI_Test(&request_list[pro_id], &flag, &status);
+                MPI_Test(&mpi_request_list[pro_id], &flag, &status);
                 if (!flag) continue;
 
                 // unpack recv pack
@@ -2133,25 +2130,26 @@ static void run_agios(){
                 unpacked_result = unpack_msg(total_buffer[pro_id]);
 
                 // test
-                printf("Recv from %d: (%d, %lld, %lld, %s)\n", pro_id, unpacked_result.packtype, unpacked_result.offset, unpacked_result.len, unpacked_result.filename);
-                fflush(stdout);
+                //printf("Recv from %d: (%d, %lld, %lld, %s)\n", pro_id, unpacked_result.packtype, unpacked_result.offset, unpacked_result.len, unpacked_result.filename);
+                //fflush(stdout);
 
                 // exit judge
                 if (unpacked_result.packtype == 5){
-                    result_list[pro_id] = 1;
-                    running_count--;
+                        result_list[pro_id] = 1;
+                        running_count--;
                 } else {
-                    MPI_Irecv(total_buffer[pro_id], 150, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &request_list[pro_id]);
+                        // on recv
+                        recv_count++;
+                        MPI_Irecv(total_buffer[pro_id], 150, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
                 }
             }
         }
-
-        free(request_list);
+        free(mpi_request_list);
         free(result_list);
         free(total_buffer);
 
         //end agios, wait for the end of all threads, free stuff
 	agios_exit();
 
-        printf("Agios run and exit successfully.\n");
+        printf("Agios run and exit successfully with %d requests.\n", recv_count);
 }

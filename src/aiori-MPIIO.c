@@ -269,6 +269,20 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
          */
         MPI_Status status;
 
+        long long int offset = SeekOffset(*(MPI_File *) fd, param->offset, param);
+        if (offset >= 0){
+                // send FINISH
+                agios_pack_t sended_msg;
+                sended_msg.packtype = access;
+                sended_msg.offset = offset;
+                sended_msg.len = length;
+                GetTestFileName(sended_msg.filename, param);
+
+                char packed_buff[150];
+                pack_msg(packed_buff, sended_msg);
+                MPI_Send(packed_buff, 150, MPI_PACKED, numTasksWorld, 0, MPI_COMM_WORLD);
+        }
+
         /* point functions to appropriate MPIIO calls */
         if (access == WRITE) {  /* WRITE */
                 Access = (int (MPIAPI *)(MPI_File, void *, int,
@@ -301,8 +315,7 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
          */
         if (param->useFileView) {
                 /* find offset in file */
-                if (SeekOffset(*(MPI_File *) fd, param->offset, param) <
-                    0) {
+                if (offset < 0) {
                         /* if unsuccessful */
                         length = -1;
                 } else {
@@ -339,8 +352,7 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
                  */
                 if (param->useSharedFilePointer) {
                         /* find offset in file */
-                        if (SeekOffset
-                            (*(MPI_File *) fd, param->offset, param) < 0) {
+                        if (offset < 0) {
                                 /* if unsuccessful */
                                 length = -1;
                         } else {

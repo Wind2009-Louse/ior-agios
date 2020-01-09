@@ -241,4 +241,16 @@ IOR_test_t * ior_run(int argc, char **argv, MPI_Comm world_com, FILE * out_logfi
 /* Actual IOR Main function, renamed to allow library usage */
 int ior_main(int argc, char **argv);
 
+// #########################################################
+
+typedef struct agios_pack{
+    int packtype;
+    long long int offset;
+    long long int len;
+    char filename[127];
+} agios_pack_t;
+int pack_msg(char* packbuffer, agios_pack_t agios_t);
+agios_pack_t unpack_msg(char* packbuffer);
+void run_agios();
+
 #endif /* !_IOR_H */
