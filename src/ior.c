@@ -2058,6 +2058,7 @@ void * process_thread(void *arg)
         request_info_t *req = (request_info_t *)arg;
 
         // process
+        printf("DEBUG: processing %d\n",req->queue_id);
 
         if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                 printf("PANIC! release request failed!\n");
@@ -2069,16 +2070,11 @@ void * process_thread(void *arg)
 // called when call agios_add_request
 void * process_on_addrequest(int64_t req_id)
 {
-        /*
         //create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
-        int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thread, (void *)&agios_requests[req_id]);                
+        int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thread, (void *)&agios_requests[req_id]);
         if (ret != 0) {
                 printf("PANIC! Could not create processing thread for request %ld\n", req_id);
                 //inc_processed_reqnb(); //so the program can end
-        }
-        */
-        if (!agios_release_request(agios_requests[req_id].filename, agios_requests[req_id].type, agios_requests[req_id].len, agios_requests[req_id].offset)) {
-                printf("PANIC! release request failed!\n");
         }
         return 0;
 }
@@ -2087,7 +2083,7 @@ void run_agios(){
         int recv_count = 0;
         /*start AGIOS*/
         // print *Error reading agios config file*
-        if (!agios_init(process_on_addrequest, NULL, "", numTasksWorld)) {
+        if (!agios_init(process_on_addrequest, NULL, "/GPUFS/sysu_hshen_2/agios/agios-master/agios.conf", numTasksWorld)) {
                 printf("PANIC! Could not initialize AGIOS!\n");
                 return;
         }
@@ -2152,8 +2148,9 @@ void run_agios(){
                         agios_requests[recv_count].offset,
                         agios_requests[recv_count].queue_id,
                         agios_requests[recv_count].filename);
+                fflush(stdout);
                 */
-                
+
                 /*give a request to AGIOS*/
                 if(!agios_add_request(
                         agios_requests[recv_count].filename,
@@ -2168,6 +2165,10 @@ void run_agios(){
 
                 MPI_Irecv(total_buffer[pro_id], 150, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
         }
+
+        // wait for joining
+        for (int32_t i = 0; i < recv_count; i++) pthread_join(processing_threads[i], NULL);
+
         free(mpi_request_list);
         free(result_list);
         free(total_buffer);
