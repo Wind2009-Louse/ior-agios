@@ -1291,7 +1291,7 @@ static void TestIoSys(IOR_test_t *test)
                         MPI_CHECK(MPI_Barrier(testComm), "barrier error");
                         params->open = WRITE;
                         timer[0][rep] = GetTimeStamp();
-                        fd = backend->create(testFileName, params);
+                        //fd = backend->create(testFileName, params);
                         timer[1][rep] = GetTimeStamp();
                         if (params->intraTestBarriers)
                                 MPI_CHECK(MPI_Barrier(testComm),
@@ -1312,18 +1312,18 @@ static void TestIoSys(IOR_test_t *test)
                                 MPI_CHECK(MPI_Barrier(testComm),
                                           "barrier error");
                         timer[4][rep] = GetTimeStamp();
-                        backend->close(fd, params);
+                        //backend->close(fd, params);
 
                         timer[5][rep] = GetTimeStamp();
                         MPI_CHECK(MPI_Barrier(testComm), "barrier error");
 
                         /* get the size of the file just written */
-                        results[rep].aggFileSizeFromStat =
-                                backend->get_file_size(params, testComm, testFileName);
+                        // results[rep].aggFileSizeFromStat =
+                        //         backend->get_file_size(params, testComm, testFileName);
 
                         /* check if stat() of file doesn't equal expected file size,
                            use actual amount of byte moved */
-                        CheckFileSize(test, dataMoved, rep);
+                        //CheckFileSize(test, dataMoved, rep);
 
                         if (verbose >= VERBOSE_3)
                                 WriteTimes(params, timer, rep, WRITE);
@@ -1361,9 +1361,9 @@ static void TestIoSys(IOR_test_t *test)
 
                         GetTestFileName(testFileName, params);
                         params->open = WRITECHECK;
-                        fd = backend->open(testFileName, params);
+                        //fd = backend->open(testFileName, params);
                         dataMoved = WriteOrRead(params, & results[rep], fd, WRITECHECK, &ioBuffers);
-                        backend->close(fd, params);
+                        //backend->close(fd, params);
                         rankOffset = 0;
                 }
                 /*
@@ -1430,7 +1430,7 @@ static void TestIoSys(IOR_test_t *test)
                         MPI_CHECK(MPI_Barrier(testComm), "barrier error");
                         params->open = READ;
                         timer[6][rep] = GetTimeStamp();
-                        fd = backend->open(testFileName, params);
+                        //fd = backend->open(testFileName, params);
                         timer[7][rep] = GetTimeStamp();
                         if (params->intraTestBarriers)
                                 MPI_CHECK(MPI_Barrier(testComm),
@@ -1442,23 +1442,24 @@ static void TestIoSys(IOR_test_t *test)
                         }
                         timer[8][rep] = GetTimeStamp();
                         dataMoved = WriteOrRead(params, & results[rep], fd, operation_flag, &ioBuffers);
+                        printf("end WriteOrRead\n");
                         timer[9][rep] = GetTimeStamp();
                         if (params->intraTestBarriers)
                                 MPI_CHECK(MPI_Barrier(testComm),
                                           "barrier error");
                         timer[10][rep] = GetTimeStamp();
-                        backend->close(fd, params);
+                        //backend->close(fd, params);
                         timer[11][rep] = GetTimeStamp();
 
                         /* get the size of the file just read */
-                        results[rep].aggFileSizeFromStat =
-                                backend->get_file_size(params, testComm,
-                                                       testFileName);
+                        // results[rep].aggFileSizeFromStat =
+                        //         backend->get_file_size(params, testComm,
+                        //                                testFileName);
 
                         /* check if stat() of file doesn't equal expected file size,
                            use actual amount of byte moved */
-                        CheckFileSize(test, dataMoved, rep);
-
+                        //CheckFileSize(test, dataMoved, rep);
+                        printf("end IO, begin reduce\n");
                         if (verbose >= VERBOSE_3)
                                 WriteTimes(params, timer, rep, READ);
                         ReduceIterResults(test, timer, rep, READ);
@@ -1483,6 +1484,7 @@ static void TestIoSys(IOR_test_t *test)
                 rankOffset = 0;
 
                 PrintRepeatEnd();
+                printf("finish testIoSys\n");
         }
 
         MPI_CHECK(MPI_Comm_free(&testComm), "MPI_Comm_free() error");
@@ -1866,6 +1868,7 @@ static IOR_offset_t WriteOrReadSingle(IOR_offset_t pairCnt, IOR_offset_t *offset
  */
 static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, void *fd, int access, IOR_io_buffers* ioBuffers)
 {
+        printf("begin writeOrRead\n");
         int errors = 0;
         IOR_offset_t transferCount = 0;
         uint64_t pairCnt = 0;
@@ -1939,8 +1942,9 @@ static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, voi
         free(offsetArray);
 
         if (access == WRITE && test->fsync == TRUE) {
-                backend->fsync(fd, test);       /*fsync after all accesses */
+                //backend->fsync(fd, test);       /*fsync after all accesses */
         }
+        printf("finish writeOrRead\n");
         return (dataMoved);
 }
 
@@ -2058,7 +2062,7 @@ void * process_thread(void *arg)
         request_info_t *req = (request_info_t *)arg;
 
         // process
-        printf("DEBUG: processing %d\n",req->queue_id);
+        //printf("DEBUG: processing %d\n",req->queue_id);
 
         if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                 printf("PANIC! release request failed!\n");

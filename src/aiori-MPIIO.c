@@ -268,8 +268,8 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
          *                                MPI_Datatype, MPI_Status *);
          */
         MPI_Status status;
-
-        long long int offset = SeekOffset(*(MPI_File *) fd, param->offset, param);
+        // 这个操作在这里做不合理，要移到agios里面去做，这里暂时设为10测试下去掉fd的逻辑,后面再改
+        long long int offset = 10;
         if (offset >= 0){
                 // send FINISH
                 agios_pack_t sended_msg;
@@ -310,81 +310,82 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
                  */
         }
 
+        // 因为fd实际传过来的为空，下面全部不执行，由agios去执行实际io
         /*
          * 'useFileView' uses derived datatypes and individual file pointers
          */
-        if (param->useFileView) {
-                /* find offset in file */
-                if (offset < 0) {
-                        /* if unsuccessful */
-                        length = -1;
-                } else {
-                        /*
-                         * 'useStridedDatatype' fits multi-strided pattern into a datatype;
-                         * must use 'length' to determine repetitions (fix this for
-                         * multi-segments someday, WEL):
-                         * e.g.,  'IOR -s 2 -b 32K -t 32K -a MPIIO -S'
-                         */
-                        if (param->useStridedDatatype) {
-                                length = param->segmentCount;
-                        } else {
-                                length = 1;
-                        }
-                        if (param->collective) {
-                                /* individual, collective call */
-                                MPI_CHECK(Access_all
-                                          (*(MPI_File *) fd, buffer, length,
-                                           param->transferType, &status),
-                                          "cannot access collective");
-                        } else {
-                                /* individual, noncollective call */
-                                MPI_CHECK(Access
-                                          (*(MPI_File *) fd, buffer, length,
-                                           param->transferType, &status),
-                                          "cannot access noncollective");
-                        }
-                        length *= param->transferSize;  /* for return value in bytes */
-                }
-        } else {
-                /*
-                 * !useFileView does not use derived datatypes, but it uses either
-                 * shared or explicit file pointers
-                 */
-                if (param->useSharedFilePointer) {
-                        /* find offset in file */
-                        if (offset < 0) {
-                                /* if unsuccessful */
-                                length = -1;
-                        } else {
-                                /* shared, collective call */
-                                /*
-                                 * this needs to be properly implemented:
-                                 *
-                                 *   MPI_CHECK(Access_ordered(fd.MPIIO, buffer, length,
-                                 *                            MPI_BYTE, &status),
-                                 *             "cannot access shared, collective");
-                                 */
-                                fprintf(stdout,
-                                        "useSharedFilePointer not implemented\n");
-                        }
-                } else {
-                        if (param->collective) {
-                                /* explicit, collective call */
-                                MPI_CHECK(Access_at_all
-                                          (*(MPI_File *) fd, param->offset,
-                                           buffer, length, MPI_BYTE, &status),
-                                          "cannot access explicit, collective");
-                        } else {
-                                /* explicit, noncollective call */
-                                MPI_CHECK(Access_at
-                                          (*(MPI_File *) fd, param->offset,
-                                           buffer, length, MPI_BYTE, &status),
-                                          "cannot access explicit, noncollective");
-                        }
-                }
-        }
-        if((access == WRITE) && (param->fsyncPerWrite == TRUE))
-               MPIIO_Fsync(fd, param);
+        // if (param->useFileView) {
+        //         /* find offset in file */
+        //         if (offset < 0) {
+        //                 /* if unsuccessful */
+        //                 length = -1;
+        //         } else {
+        //                 /*
+        //                  * 'useStridedDatatype' fits multi-strided pattern into a datatype;
+        //                  * must use 'length' to determine repetitions (fix this for
+        //                  * multi-segments someday, WEL):
+        //                  * e.g.,  'IOR -s 2 -b 32K -t 32K -a MPIIO -S'
+        //                  */
+        //                 if (param->useStridedDatatype) {
+        //                         length = param->segmentCount;
+        //                 } else {
+        //                         length = 1;
+        //                 }
+        //                 if (param->collective) {
+        //                         /* individual, collective call */
+        //                         MPI_CHECK(Access_all
+        //                                   (*(MPI_File *) fd, buffer, length,
+        //                                    param->transferType, &status),
+        //                                   "cannot access collective");
+        //                 } else {
+        //                         /* individual, noncollective call */
+        //                         MPI_CHECK(Access
+        //                                   (*(MPI_File *) fd, buffer, length,
+        //                                    param->transferType, &status),
+        //                                   "cannot access noncollective");
+        //                 }
+        //                 length *= param->transferSize;  /* for return value in bytes */
+        //         }
+        // } else {
+        //         /*
+        //          * !useFileView does not use derived datatypes, but it uses either
+        //          * shared or explicit file pointers
+        //          */
+        //         if (param->useSharedFilePointer) {
+        //                 /* find offset in file */
+        //                 if (offset < 0) {
+        //                         /* if unsuccessful */
+        //                         length = -1;
+        //                 } else {
+        //                         /* shared, collective call */
+        //                         /*
+        //                          * this needs to be properly implemented:
+        //                          *
+        //                          *   MPI_CHECK(Access_ordered(fd.MPIIO, buffer, length,
+        //                          *                            MPI_BYTE, &status),
+        //                          *             "cannot access shared, collective");
+        //                          */
+        //                         fprintf(stdout,
+        //                                 "useSharedFilePointer not implemented\n");
+        //                 }
+        //         } else {
+        //                 if (param->collective) {
+        //                         /* explicit, collective call */
+        //                         MPI_CHECK(Access_at_all
+        //                                   (*(MPI_File *) fd, param->offset,
+        //                                    buffer, length, MPI_BYTE, &status),
+        //                                   "cannot access explicit, collective");
+        //                 } else {
+        //                         /* explicit, noncollective call */
+        //                         MPI_CHECK(Access_at
+        //                                   (*(MPI_File *) fd, param->offset,
+        //                                    buffer, length, MPI_BYTE, &status),
+        //                                   "cannot access explicit, noncollective");
+        //                 }
+        //         }
+        // }
+        // if((access == WRITE) && (param->fsyncPerWrite == TRUE))
+        //        MPIIO_Fsync(fd, param);
         return (length);
 }
 
