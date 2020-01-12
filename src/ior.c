@@ -166,9 +166,9 @@ int ior_main(int argc, char **argv)
         strcpy(final_msg.filename,"");
 
 
-        char packed_buff[150];
+        char packed_buff[msg_buff_size];
         pack_msg(packed_buff, final_msg);
-        MPI_Send(packed_buff, 150, MPI_PACKED, numTasksWorld, 0, MPI_COMM_WORLD);
+        MPI_Send(packed_buff, msg_buff_size, MPI_PACKED, numTasksWorld, 0, MPI_COMM_WORLD);
 
         if (verbose < 0)
                 /* always print final summary */
@@ -2031,10 +2031,14 @@ pthread_t* processing_threads;
 // pack message into char
 int pack_msg(char* packbuffer, agios_pack_t agios_t){
     int pos = 0;
-    MPI_Pack(&agios_t.packtype, 1, MPI_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.offset, 1, MPI_LONG_LONG_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.len, 1, MPI_LONG_LONG_INT, packbuffer, 150, &pos, MPI_COMM_WORLD);
-    MPI_Pack(agios_t.filename, 101, MPI_CHAR, packbuffer, 150, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.packtype, 1, MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.offset, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.len, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.blockSize, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.transferSize, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.openFlags, 1, MPI_UNSIGNED, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(agios_t.filename, 101, MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(agios_t.api, 17, MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     return pos;
 }
 
@@ -2042,10 +2046,14 @@ int pack_msg(char* packbuffer, agios_pack_t agios_t){
 agios_pack_t unpack_msg(char* packbuffer){
     agios_pack_t result;
     int pos = 0;
-    MPI_Unpack(packbuffer, 150, &pos, &result.packtype, 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Unpack(packbuffer, 150, &pos, &result.offset, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
-    MPI_Unpack(packbuffer, 150, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
-    MPI_Unpack(packbuffer, 150, &pos, result.filename, 101, MPI_CHAR, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.packtype, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.offset, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.blockSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.transferSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.openFlags, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, result.filename, 101, MPI_CHAR, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, result.api, 17, MPI_CHAR, MPI_COMM_WORLD);
     return result;
 }
 
@@ -2060,10 +2068,17 @@ void inc_processed_reqnb()
 void * process_thread(void *arg)
 {
         request_info_t *req = (request_info_t *)arg;
+        void *fd;
 
         // process
         //printf("DEBUG: processing %d\n",req->queue_id);
 
+        /* bind I/O calls to specific API */
+        backend = aiori_select(req->api);
+        if (backend == NULL)
+                ERR_SIMPLE("unrecognized I/O API");
+        
+        
         if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                 printf("PANIC! release request failed!\n");
         }
@@ -2105,10 +2120,10 @@ void run_agios(){
         agios_requests = (request_info_t *)malloc(sizeof(request_info_t)*MAX_REQUESTS);
         processing_threads = (pthread_t *)malloc(sizeof(pthread_t)*MAX_REQUESTS);
         for (int i = 0; i < numTasksWorld; ++ i){
-            char* buffer = malloc(sizeof(char*) * 150);
+            char* buffer = malloc(sizeof(char*) * msg_buff_size);
             total_buffer[i] = buffer;
             result_list[i] = 0;
-            MPI_Irecv(total_buffer[i], 150, MPI_PACKED, i, 0, MPI_COMM_WORLD, &mpi_request_list[i]);
+            MPI_Irecv(total_buffer[i], msg_buff_size, MPI_PACKED, i, 0, MPI_COMM_WORLD, &mpi_request_list[i]);
         }
 
         // round-robin
@@ -2144,6 +2159,10 @@ void run_agios(){
                 agios_requests[recv_count].offset = unpacked_result.offset;
                 agios_requests[recv_count].queue_id = pro_id;
                 strcpy(agios_requests[recv_count].filename, unpacked_result.filename);
+                strcpy(agios_requests[recv_count].api, unpacked_result.api);
+                agios_requests[recv_count].blockSize = unpacked_result.blockSize;
+                agios_requests[recv_count].transferSize = unpacked_result.transferSize;
+                agios_requests[recv_count].openFlags = unpacked_result.openFlags;
                 /*
                 printf("ID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\n", 
                         recv_count,
@@ -2167,7 +2186,7 @@ void run_agios(){
                 }
                 recv_count++;
 
-                MPI_Irecv(total_buffer[pro_id], 150, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
+                MPI_Irecv(total_buffer[pro_id], msg_buff_size, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
         }
 
         // wait for joining

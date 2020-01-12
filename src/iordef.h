@@ -108,6 +108,9 @@ enum OutputFormat_t{
 #define VERBOSE_4          4
 #define VERBOSE_5          5
 
+// msg buffer size
+#define msg_buff_size      1024
+
 #define MAX_STR            1024                /* max string length */
 #define MAX_HINTS          16                  /* max number of hints */
 #define MAX_RETRY          10000               /* max retries for POSIX xfer */

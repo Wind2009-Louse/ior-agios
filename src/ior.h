@@ -244,18 +244,28 @@ int ior_main(int argc, char **argv);
 // #########################################################
 
 typedef struct agios_pack{
-    int packtype;
     long long int offset;
     long long int len;
+    long long int blockSize;
+    long long int transferSize;
+
+    unsigned int openFlags;
+    int packtype;
     char filename[100];
+    char api[16];
 } agios_pack_t;
 
 typedef struct request_info {
-	char filename[100];
 	int64_t len;
 	int64_t offset;
+    int64_t blockSize;
+    int64_t transferSize;
+
+    unsigned int openFlags;
 	int32_t type;
 	int32_t queue_id;
+    char filename[100];
+    char api[16];
 } request_info_t;
 
 int pack_msg(char* packbuffer, agios_pack_t agios_t);

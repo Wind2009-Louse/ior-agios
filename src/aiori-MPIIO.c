@@ -277,10 +277,14 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
                 sended_msg.offset = offset;
                 sended_msg.len = length;
                 GetTestFileName(sended_msg.filename, param);
+                strcpy(sended_msg.api, param->api);
+                sended_msg.blockSize = param->blockSize;
+                sended_msg.transferSize = param->transferSize;
+                sended_msg.openFlags = param->openFlags;
 
-                char packed_buff[150];
+                char packed_buff[msg_buff_size];
                 pack_msg(packed_buff, sended_msg);
-                MPI_Send(packed_buff, 150, MPI_PACKED, numTasksWorld, 0, MPI_COMM_WORLD);
+                MPI_Send(packed_buff, msg_buff_size, MPI_PACKED, numTasksWorld, 0, MPI_COMM_WORLD);
         }
 
         /* point functions to appropriate MPIIO calls */
