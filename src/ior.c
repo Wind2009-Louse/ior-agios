@@ -159,10 +159,8 @@ int ior_main(int argc, char **argv)
         }
 
         // send FINISH
-        agios_pack_t final_msg;
-        final_msg.packtype = 5;
-        final_msg.offset = 0;
-        final_msg.len = 0;
+        request_info_t final_msg;
+        final_msg.type = 5;
         strcpy(final_msg.filename,"");
 
 
@@ -2029,24 +2027,32 @@ request_info_t* agios_requests; /**< the list containing ALL requests generated 
 pthread_t* processing_threads;
 
 // pack message into char
-int pack_msg(char* packbuffer, agios_pack_t agios_t){
+int pack_msg(char* packbuffer, request_info_t agios_t){
     int pos = 0;
-    MPI_Pack(&agios_t.packtype, 1, MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.offset, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.len, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.blockSize, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.transferSize, 1, MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.openFlags, 1, MPI_UNSIGNED, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(agios_t.filename, 101, MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(agios_t.api, 17, MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.type      , 1     , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.filePerProc, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.preallocate, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.useFileView, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.numTasks, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.offset    , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.len       , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.blockSize , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.transferSize, 1   , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.openFlags , 1     , MPI_UNSIGNED, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(agios_t.filename   , 101   , MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(agios_t.api        , 17    , MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     return pos;
 }
 
-// unpack message from char to agios_pack_t
-agios_pack_t unpack_msg(char* packbuffer){
-    agios_pack_t result;
+// unpack message from char to request_info_t
+request_info_t unpack_msg(char* packbuffer){
+    request_info_t result;
     int pos = 0;
-    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.packtype, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.type, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.filePerProc, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.preallocate, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.useFileView, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.numTasks, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.offset, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.blockSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
@@ -2078,7 +2084,7 @@ void * process_thread(void *arg)
         if (backend == NULL)
                 ERR_SIMPLE("unrecognized I/O API");
         
-        
+
         if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                 printf("PANIC! release request failed!\n");
         }
@@ -2092,7 +2098,8 @@ void * process_on_addrequest(int64_t req_id)
         //create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
         int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thread, (void *)&agios_requests[req_id]);
         if (ret != 0) {
-                printf("PANIC! Could not create processing thread for request %ld\n", req_id);
+                printf("PANIC! Could not create processing thread for request %ld with code %d\n", req_id, ret);
+                processing_threads[req_id] = -1;
                 //inc_processed_reqnb(); //so the program can end
         }
         return 0;
@@ -2139,32 +2146,23 @@ void run_agios(){
                 if (!flag) continue;
 
                 // unpack recv pack
-                agios_pack_t unpacked_result;
+                request_info_t unpacked_result;
                 unpacked_result = unpack_msg(total_buffer[pro_id]);
 
                 // test
-                //printf("Recv from %d: (%d, %lld, %lld, %s)\n", pro_id, unpacked_result.packtype, unpacked_result.offset, unpacked_result.len, unpacked_result.filename);
+                //printf("Recv from %d: (%d, %lld, %lld, %s)\n", pro_id, unpacked_result.type, unpacked_result.offset, unpacked_result.len, unpacked_result.filename);
                 //fflush(stdout);
 
                 // exit judge
-                if (unpacked_result.packtype == 5){
+                if (unpacked_result.type == 5){
                         result_list[pro_id] = 1;
                         running_count--;
                         continue;
                 }
 
                 // put into request list
-                agios_requests[recv_count].type = (unpacked_result.packtype == WRITE);
-                agios_requests[recv_count].len = unpacked_result.len;
-                agios_requests[recv_count].offset = unpacked_result.offset;
-                agios_requests[recv_count].queue_id = pro_id;
-                strcpy(agios_requests[recv_count].filename, unpacked_result.filename);
-                strcpy(agios_requests[recv_count].api, unpacked_result.api);
-                agios_requests[recv_count].blockSize = unpacked_result.blockSize;
-                agios_requests[recv_count].transferSize = unpacked_result.transferSize;
-                agios_requests[recv_count].openFlags = unpacked_result.openFlags;
-                /*
-                printf("ID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\n", 
+                agios_requests[recv_count] = unpacked_result;
+                printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\x1B[0m\n", 
                         recv_count,
                         agios_requests[recv_count].type,
                         agios_requests[recv_count].len,
@@ -2172,7 +2170,6 @@ void run_agios(){
                         agios_requests[recv_count].queue_id,
                         agios_requests[recv_count].filename);
                 fflush(stdout);
-                */
 
                 /*give a request to AGIOS*/
                 if(!agios_add_request(
@@ -2190,7 +2187,16 @@ void run_agios(){
         }
 
         // wait for joining
-        for (int32_t i = 0; i < recv_count; i++) pthread_join(processing_threads[i], NULL);
+        for (int32_t i = 0; i < recv_count; i++) {
+                while(processing_threads[i]==(pthread_t*)NULL){
+                        sleep(1);
+                };
+                // skip failed thread
+                if (processing_threads[i] == -1){
+                        continue;
+                }
+                pthread_join(processing_threads[i], NULL);
+        }
 
         free(mpi_request_list);
         free(result_list);

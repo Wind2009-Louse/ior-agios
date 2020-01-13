@@ -272,8 +272,8 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
         long long int offset = 10;
         if (offset >= 0){
                 // send FINISH
-                agios_pack_t sended_msg;
-                sended_msg.packtype = access;
+                request_info_t sended_msg;
+                sended_msg.type = (access == WRITE);
                 sended_msg.offset = offset;
                 sended_msg.len = length;
                 GetTestFileName(sended_msg.filename, param);
@@ -281,6 +281,7 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
                 sended_msg.blockSize = param->blockSize;
                 sended_msg.transferSize = param->transferSize;
                 sended_msg.openFlags = param->openFlags;
+                sended_msg.queue_id = rank;
 
                 char packed_buff[msg_buff_size];
                 pack_msg(packed_buff, sended_msg);
