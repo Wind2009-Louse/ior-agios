@@ -281,6 +281,11 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
                 sended_msg.blockSize = param->blockSize;
                 sended_msg.transferSize = param->transferSize;
                 sended_msg.openFlags = param->openFlags;
+                sended_msg.segmentCount = param->segmentCount;
+                sended_msg.filePerProc = param->filePerProc;
+                sended_msg.preallocate = param->preallocate;
+                sended_msg.useFileView = param->useFileView;
+                sended_msg.numTasks = param->numTasks;
                 sended_msg.queue_id = rank;
 
                 char packed_buff[msg_buff_size];

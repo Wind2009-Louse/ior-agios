@@ -248,6 +248,7 @@ typedef struct request_info {
 	int64_t offset;
     int64_t blockSize;
     int64_t transferSize;
+    int64_t segmentCount;
 
     unsigned int openFlags;
     int32_t filePerProc;
@@ -263,5 +264,8 @@ typedef struct request_info {
 int pack_msg(char* packbuffer, request_info_t agios_t);
 request_info_t unpack_msg(char* packbuffer);
 void run_agios();
+
+static void *Agios_MPIIO_Open(request_info_t * param);
+static void Agios_MPIIO_Close(void *fd, request_info_t * param);
 
 #endif /* !_IOR_H */

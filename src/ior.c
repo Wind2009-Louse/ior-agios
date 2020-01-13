@@ -2038,6 +2038,7 @@ int pack_msg(char* packbuffer, request_info_t agios_t){
     MPI_Pack(&agios_t.len       , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.blockSize , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.transferSize, 1   , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.segmentCount, 1   , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.openFlags , 1     , MPI_UNSIGNED, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(agios_t.filename   , 101   , MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(agios_t.api        , 17    , MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
@@ -2057,6 +2058,7 @@ request_info_t unpack_msg(char* packbuffer){
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.blockSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.transferSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.segmentCount, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.openFlags, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.filename, 101, MPI_CHAR, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.api, 17, MPI_CHAR, MPI_COMM_WORLD);
@@ -2077,7 +2079,8 @@ void * process_thread(void *arg)
         void *fd;
 
         // process
-        //printf("DEBUG: processing %d\n",req->queue_id);
+        //fd = Agios_MPIIO_Open(req);
+        //Agios_MPIIO_Close(fd, req);
 
         /* bind I/O calls to specific API */
         backend = aiori_select(req->api);
@@ -2127,7 +2130,7 @@ void run_agios(){
         agios_requests = (request_info_t *)malloc(sizeof(request_info_t)*MAX_REQUESTS);
         processing_threads = (pthread_t *)malloc(sizeof(pthread_t)*MAX_REQUESTS);
         for (int i = 0; i < numTasksWorld; ++ i){
-            char* buffer = malloc(sizeof(char*) * msg_buff_size);
+            char* buffer = malloc(sizeof(char) * msg_buff_size);
             total_buffer[i] = buffer;
             result_list[i] = 0;
             MPI_Irecv(total_buffer[i], msg_buff_size, MPI_PACKED, i, 0, MPI_COMM_WORLD, &mpi_request_list[i]);
@@ -2161,7 +2164,8 @@ void run_agios(){
                 }
 
                 // put into request list
-                agios_requests[recv_count] = unpacked_result;
+                memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));  
+                /*
                 printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\x1B[0m\n", 
                         recv_count,
                         agios_requests[recv_count].type,
@@ -2170,6 +2174,7 @@ void run_agios(){
                         agios_requests[recv_count].queue_id,
                         agios_requests[recv_count].filename);
                 fflush(stdout);
+                */
 
                 /*give a request to AGIOS*/
                 if(!agios_add_request(
@@ -2208,4 +2213,83 @@ void run_agios(){
         agios_exit();
 
         printf("Agios run and exit successfully with %d requests.\n", recv_count);
+}
+
+static void *Agios_MPIIO_Open(request_info_t * param)
+{
+        int fd_mode = (int)0,
+            offsetFactor,
+            tasksPerFile,
+            transfersPerBlock = param->blockSize / param->transferSize;
+        struct fileTypeStruct {
+                int globalSizes[2], localSizes[2], startIndices[2];
+        } fileTypeStruct;
+        MPI_File *fd;
+        MPI_Comm comm;
+
+        fd = (MPI_File *) malloc(sizeof(MPI_File));
+        if (fd == NULL)
+                ERR("malloc failed()");
+
+        *fd = 0;
+
+        /* set IOR file flags to MPIIO flags */
+        /* -- file open flags -- */
+        if (param->openFlags & IOR_RDONLY) {
+                fd_mode |= MPI_MODE_RDONLY;
+        }
+        if (param->openFlags & IOR_WRONLY) {
+                fd_mode |= MPI_MODE_WRONLY;
+        }
+        if (param->openFlags & IOR_RDWR) {
+                fd_mode |= MPI_MODE_RDWR;
+        }
+        if (param->openFlags & IOR_APPEND) {
+                fd_mode |= MPI_MODE_APPEND;
+        }
+        if (param->openFlags & IOR_CREAT) {
+                fd_mode |= MPI_MODE_CREATE;
+        }
+        if (param->openFlags & IOR_EXCL) {
+                fd_mode |= MPI_MODE_EXCL;
+        }
+        if (param->openFlags & IOR_TRUNC) {
+                fprintf(stdout, "File truncation not implemented in MPIIO\n");
+        }
+        if (param->openFlags & IOR_DIRECT) {
+                fprintf(stdout, "O_DIRECT not implemented in MPIIO\n");
+        }
+
+        /*
+         * MPI_MODE_UNIQUE_OPEN mode optimization eliminates the overhead of file
+         * locking.  Only open a file in this mode when the file will not be con-
+         * currently opened elsewhere, either inside or outside the MPI environment.
+         */
+        fd_mode |= MPI_MODE_UNIQUE_OPEN;
+
+        if (param->filePerProc) {
+                comm = MPI_COMM_SELF;
+        } else {
+                comm = testComm;
+        }
+
+        MPI_CHECK(MPI_File_open(comm, param->filename, fd_mode, MPI_INFO_NULL, fd),
+                  "cannot open file");
+
+        /* preallocate space for file */
+        if (param->preallocate && param->type == 1) {
+                MPI_CHECK(MPI_File_preallocate(*fd,
+                                               (MPI_Offset) (param->segmentCount
+                                                             *
+                                                             param->blockSize *
+                                                             param->numTasks)),
+                          "cannot preallocate file");
+        }
+        return ((void *)fd);
+}
+
+static void Agios_MPIIO_Close(void *fd, request_info_t * param)
+{
+        MPI_CHECK(MPI_File_close((MPI_File *) fd), "cannot close file");
+        free(fd);
 }
