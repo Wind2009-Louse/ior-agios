@@ -2171,7 +2171,7 @@ void run_agios(){
                 }
 
                 // put into request list
-                memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));  
+                memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));
                 
                 printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\x1B[0m\n", 
                         recv_count,
@@ -2182,7 +2182,6 @@ void run_agios(){
                         agios_requests[recv_count].filename);
                 fflush(stdout);
                 
-
                 /*give a request to AGIOS*/
                 if(!agios_add_request(
                         agios_requests[recv_count].filename,

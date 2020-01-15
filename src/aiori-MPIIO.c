@@ -32,6 +32,7 @@
 /**************************** P R O T O T Y P E S *****************************/
 
 static IOR_offset_t SeekOffset(MPI_File, IOR_offset_t, IOR_param_t *);
+static IOR_offset_t SeekOffsetOnly(IOR_offset_t, IOR_param_t *);
 
 static void *MPIIO_Create(char *, IOR_param_t *);
 static void *MPIIO_Open(char *, IOR_param_t *);
@@ -268,8 +269,7 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
          *                                MPI_Datatype, MPI_Status *);
          */
         MPI_Status status;
-        // 这个操作在这里做不合理，要移到agios里面去做，这里暂时设为10测试下去掉fd的逻辑,后面再改
-        long long int offset = 10;
+        long long int offset = SeekOffsetOnly(param->offset, param);
         if (offset >= 0){
                 // send FINISH
                 request_info_t sended_msg;
@@ -486,6 +486,41 @@ static IOR_offset_t SeekOffset(MPI_File fd, IOR_offset_t offset,
         MPI_CHECK(MPI_File_seek(fd, tempOffset, MPI_SEEK_SET),
                   "cannot seek offset");
         return (offset);
+}
+static IOR_offset_t SeekOffsetOnly(IOR_offset_t offset,
+                               IOR_param_t * param)
+{
+        int offsetFactor, tasksPerFile;
+        IOR_offset_t tempOffset;
+
+        tempOffset = offset;
+
+        if (param->filePerProc) {
+                offsetFactor = 0;
+                tasksPerFile = 1;
+        } else {
+                offsetFactor = (rank + rankOffset) % param->numTasks;
+                tasksPerFile = param->numTasks;
+        }
+        if (param->useFileView) {
+                /* recall that offsets in a file view are
+                   counted in units of transfer size */
+                if (param->filePerProc) {
+                        tempOffset = tempOffset / param->transferSize;
+                } else {
+                        /*
+                         * this formula finds a file view offset for a task
+                         * from an absolute offset
+                         */
+                        tempOffset = ((param->blockSize / param->transferSize)
+                                      * (tempOffset /
+                                         (param->blockSize * tasksPerFile)))
+                            + (((tempOffset % (param->blockSize * tasksPerFile))
+                                - (offsetFactor * param->blockSize))
+                               / param->transferSize);
+                }
+        }
+        return (tempOffset);
 }
 
 /*
