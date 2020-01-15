@@ -257,6 +257,7 @@ typedef struct request_info {
     int32_t numTasks;
 	int32_t type;
 	int32_t queue_id;
+    unsigned int timeStampSignatureValue;
     char filename[100];
     char api[16];
 } request_info_t;

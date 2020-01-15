@@ -2047,6 +2047,7 @@ int pack_msg(char* packbuffer, request_info_t agios_t){
     MPI_Pack(&agios_t.transferSize, 1   , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.segmentCount, 1   , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.openFlags , 1     , MPI_UNSIGNED, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.timeStampSignatureValue , 1     , MPI_UNSIGNED, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(agios_t.filename   , 101   , MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(agios_t.api        , 17    , MPI_CHAR, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     return pos;
@@ -2068,37 +2069,64 @@ request_info_t unpack_msg(char* packbuffer){
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.transferSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.segmentCount, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.openFlags, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.timeStampSignatureValue, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.filename, 101, MPI_CHAR, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.api, 17, MPI_CHAR, MPI_COMM_WORLD);
     return result;
-}
-
-void inc_processed_reqnb()
-{
-        pthread_mutex_lock(&g_processed_reqnb_mutex);
-        proceessed_count++;
-        pthread_mutex_unlock(&g_processed_reqnb_mutex);
 }
 
 // call for request
 void * process_thread(void *arg)
 {
         request_info_t *req = (request_info_t *)arg;
-        void *fd;
 
-        fd = Agios_MPIIO_Open(req);
-        Agios_MPIIO_Close(fd, req);
-
-        /* bind I/O calls to specific API */
+        /*
+        // bind I/O calls to specific API
         backend = aiori_select(req->api);
         if (backend == NULL)
                 ERR_SIMPLE("unrecognized I/O API");
+        */
+
+        IOR_io_buffers ioBuffers;
+        MPI_Status status;
+
+        // open file
+        void *fd = Agios_MPIIO_Open(req);
+
+        // buffer init
+        ioBuffers.buffer = aligned_buffer_alloc(req->transferSize);
+        unsigned long long hi, lo;
+        int fillrank = rand() % req->numTasks;
+        unsigned long long *buf = (unsigned long long *)ioBuffers.buffer;
+        hi = ((unsigned long long)fillrank) << 32;
+        lo = (unsigned long long)req->timeStampSignatureValue;
+        for (size_t i = 0; i < req->transferSize / sizeof(unsigned long long); i++) {
+                if ((i % 2) == 0) {
+                        /* evens contain MPI rank and time in seconds */
+                        buf[i] = hi | lo;
+                } else {
+                        /* odds contain offset */
+                        buf[i] = (i * sizeof(unsigned long long));
+                }
+        }
+        
+        MPI_CHECK(MPI_File_seek(*(MPI_File *) fd, req->offset, MPI_SEEK_SET),
+                  "cannot seek offset");
+        if (req->type == 1){
+                MPI_CHECK(MPI_File_write_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
+                "MPI_File_write_at Error.");
+        } else {
+                MPI_CHECK(MPI_File_read_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
+                "MPI_File_read_at Error.");
+        }
+
+        // close file
+        Agios_MPIIO_Close(fd, req);
         
 
         if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                 printf("PANIC! release request failed!\n");
         }
-        //inc_processed_reqnb();
         return 0;
 }
 
@@ -2173,6 +2201,7 @@ void run_agios(){
                 // put into request list
                 memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));
                 
+                /*
                 printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\x1B[0m\n", 
                         recv_count,
                         agios_requests[recv_count].type,
@@ -2181,7 +2210,8 @@ void run_agios(){
                         agios_requests[recv_count].queue_id,
                         agios_requests[recv_count].filename);
                 fflush(stdout);
-                
+                */
+
                 /*give a request to AGIOS*/
                 if(!agios_add_request(
                         agios_requests[recv_count].filename,

@@ -286,6 +286,7 @@ static IOR_offset_t MPIIO_Xfer(int access, void *fd, IOR_size_t * buffer,
                 sended_msg.preallocate = param->preallocate;
                 sended_msg.useFileView = param->useFileView;
                 sended_msg.numTasks = param->numTasks;
+                sended_msg.timeStampSignatureValue = param->timeStampSignatureValue;
                 sended_msg.queue_id = rank;
 
                 char packed_buff[msg_buff_size];
