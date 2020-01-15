@@ -107,7 +107,13 @@ int ior_main(int argc, char **argv)
     tests_head = ParseCommandLine(argc, argv);
 
     /* start the MPI code */
-    MPI_CHECK(MPI_Init(&argc, &argv), "cannot initialize MPI");
+    int provided;
+    MPI_CHECK(MPI_Init_thread(&argc,&argv,MPI_THREAD_MULTIPLE, &provided), "cannot initialize MPI");
+    if(provided != MPI_THREAD_MULTIPLE)
+    {
+        printf("MPI do not Support Multiple thread\n");
+        exit(0);
+    }
 
     mpi_comm_world = MPI_COMM_WORLD;
     MPI_CHECK(MPI_Comm_size(mpi_comm_world, &numTasksWorld),
@@ -2022,7 +2028,7 @@ int32_t proceessed_count=0; /**< the number of requests already processed and re
 pthread_mutex_t g_processed_reqnb_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_processed_reqnb_cond=PTHREAD_COND_INITIALIZER;
 
-#define MAX_REQUESTS 1000000
+#define MAX_REQUESTS 100000
 request_info_t* agios_requests; /**< the list containing ALL requests generated in this test */
 pthread_t* processing_threads;
 
@@ -2034,6 +2040,7 @@ int pack_msg(char* packbuffer, request_info_t agios_t){
     MPI_Pack(&agios_t.preallocate, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.useFileView, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.numTasks, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.queue_id, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.offset    , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.len       , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.blockSize , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
@@ -2054,6 +2061,7 @@ request_info_t unpack_msg(char* packbuffer){
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.preallocate, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.useFileView, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.numTasks, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.queue_id, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.offset, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.blockSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
@@ -2078,9 +2086,8 @@ void * process_thread(void *arg)
         request_info_t *req = (request_info_t *)arg;
         void *fd;
 
-        // process
-        //fd = Agios_MPIIO_Open(req);
-        //Agios_MPIIO_Close(fd, req);
+        fd = Agios_MPIIO_Open(req);
+        Agios_MPIIO_Close(fd, req);
 
         /* bind I/O calls to specific API */
         backend = aiori_select(req->api);
@@ -2165,7 +2172,7 @@ void run_agios(){
 
                 // put into request list
                 memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));  
-                /*
+                
                 printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\x1B[0m\n", 
                         recv_count,
                         agios_requests[recv_count].type,
@@ -2174,7 +2181,7 @@ void run_agios(){
                         agios_requests[recv_count].queue_id,
                         agios_requests[recv_count].filename);
                 fflush(stdout);
-                */
+                
 
                 /*give a request to AGIOS*/
                 if(!agios_add_request(
@@ -2218,8 +2225,6 @@ void run_agios(){
 static void *Agios_MPIIO_Open(request_info_t * param)
 {
         int fd_mode = (int)0,
-            offsetFactor,
-            tasksPerFile,
             transfersPerBlock = param->blockSize / param->transferSize;
         struct fileTypeStruct {
                 int globalSizes[2], localSizes[2], startIndices[2];
@@ -2270,7 +2275,7 @@ static void *Agios_MPIIO_Open(request_info_t * param)
         if (param->filePerProc) {
                 comm = MPI_COMM_SELF;
         } else {
-                comm = testComm;
+                comm = MPI_COMM_WORLD;
         }
 
         MPI_CHECK(MPI_File_open(comm, param->filename, fd_mode, MPI_INFO_NULL, fd),
