@@ -256,11 +256,16 @@ typedef struct request_info {
     int32_t useFileView;
     int32_t numTasks;
 	int32_t type;
-	int32_t queue_id;
+	int32_t process_id;
     unsigned int timeStampSignatureValue;
     char filename[100];
     char api[16];
 } request_info_t;
+
+typedef struct request_list{
+    request_info_t* req;
+    struct request_list* next;
+}request_list_t;
 
 int pack_msg(char* packbuffer, request_info_t agios_t);
 request_info_t unpack_msg(char* packbuffer);

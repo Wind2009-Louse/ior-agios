@@ -1446,7 +1446,7 @@ static void TestIoSys(IOR_test_t *test)
                         }
                         timer[8][rep] = GetTimeStamp();
                         dataMoved = WriteOrRead(params, & results[rep], fd, operation_flag, &ioBuffers);
-                        printf("end WriteOrRead\n");
+                        //printf("end WriteOrRead\n");
                         timer[9][rep] = GetTimeStamp();
                         if (params->intraTestBarriers)
                                 MPI_CHECK(MPI_Barrier(testComm),
@@ -1463,7 +1463,7 @@ static void TestIoSys(IOR_test_t *test)
                         /* check if stat() of file doesn't equal expected file size,
                            use actual amount of byte moved */
                         //CheckFileSize(test, dataMoved, rep);
-                        printf("end IO, begin reduce\n");
+                        //printf("end IO, begin reduce\n");
                         if (verbose >= VERBOSE_3)
                                 WriteTimes(params, timer, rep, READ);
                         ReduceIterResults(test, timer, rep, READ);
@@ -1488,7 +1488,7 @@ static void TestIoSys(IOR_test_t *test)
                 rankOffset = 0;
 
                 PrintRepeatEnd();
-                printf("finish testIoSys\n");
+                //printf("finish testIoSys\n");
         }
 
         MPI_CHECK(MPI_Comm_free(&testComm), "MPI_Comm_free() error");
@@ -1872,7 +1872,7 @@ static IOR_offset_t WriteOrReadSingle(IOR_offset_t pairCnt, IOR_offset_t *offset
  */
 static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, void *fd, int access, IOR_io_buffers* ioBuffers)
 {
-        printf("begin writeOrRead\n");
+        //printf("begin writeOrRead\n");
         int errors = 0;
         IOR_offset_t transferCount = 0;
         uint64_t pairCnt = 0;
@@ -1948,7 +1948,7 @@ static IOR_offset_t WriteOrRead(IOR_param_t * test, IOR_results_t * results, voi
         if (access == WRITE && test->fsync == TRUE) {
                 //backend->fsync(fd, test);       /*fsync after all accesses */
         }
-        printf("finish writeOrRead\n");
+        //printf("finish writeOrRead\n");
         return (dataMoved);
 }
 
@@ -2025,12 +2025,16 @@ WriteTimes(IOR_param_t * test, double **timer, int iteration, int writeOrRead)
 // #########################################################
 
 int32_t proceessed_count=0; /**< the number of requests already processed and released rfom agios */
-pthread_mutex_t g_processed_reqnb_mutex=PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t g_processed_reqnb_cond=PTHREAD_COND_INITIALIZER;
+pthread_mutex_t request_queue_lock=PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t request_empty_cond=PTHREAD_COND_INITIALIZER;
 
 #define MAX_REQUESTS 100000
+#define MAX_CONSUMER 10
 request_info_t* agios_requests; /**< the list containing ALL requests generated in this test */
 pthread_t* processing_threads;
+request_list_t* request_queue_head = NULL;
+request_list_t* request_queue_tail = NULL;
+int is_all_request_sended = 0;
 
 // pack message into char
 int pack_msg(char* packbuffer, request_info_t agios_t){
@@ -2040,7 +2044,8 @@ int pack_msg(char* packbuffer, request_info_t agios_t){
     MPI_Pack(&agios_t.preallocate, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.useFileView, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.numTasks, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
-    MPI_Pack(&agios_t.queue_id, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    MPI_Pack(&agios_t.process_id, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
+    //MPI_Pack(&agios_t.queue_id, 1    , MPI_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.offset    , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.len       , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
     MPI_Pack(&agios_t.blockSize , 1     , MPI_LONG_LONG_INT, packbuffer, msg_buff_size, &pos, MPI_COMM_WORLD);
@@ -2062,7 +2067,8 @@ request_info_t unpack_msg(char* packbuffer){
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.preallocate, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.useFileView, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.numTasks, 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.queue_id, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.process_id, 1, MPI_INT, MPI_COMM_WORLD);
+    //MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.queue_id, 1, MPI_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.offset, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.len, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.blockSize, 1, MPI_LONG_LONG_INT, MPI_COMM_WORLD);
@@ -2076,56 +2082,79 @@ request_info_t unpack_msg(char* packbuffer){
 }
 
 // call for request
-void * process_thread(void *arg)
+void * process_thread()
 {
-        request_info_t *req = (request_info_t *)arg;
+        while(true){
+                pthread_mutex_lock(&request_queue_lock);
 
-        /*
-        // bind I/O calls to specific API
-        backend = aiori_select(req->api);
-        if (backend == NULL)
-                ERR_SIMPLE("unrecognized I/O API");
-        */
-
-        IOR_io_buffers ioBuffers;
-        MPI_Status status;
-
-        // open file
-        void *fd = Agios_MPIIO_Open(req);
-
-        // buffer init
-        ioBuffers.buffer = aligned_buffer_alloc(req->transferSize);
-        unsigned long long hi, lo;
-        int fillrank = rand() % req->numTasks;
-        unsigned long long *buf = (unsigned long long *)ioBuffers.buffer;
-        hi = ((unsigned long long)fillrank) << 32;
-        lo = (unsigned long long)req->timeStampSignatureValue;
-        for (size_t i = 0; i < req->transferSize / sizeof(unsigned long long); i++) {
-                if ((i % 2) == 0) {
-                        /* evens contain MPI rank and time in seconds */
-                        buf[i] = hi | lo;
-                } else {
-                        /* odds contain offset */
-                        buf[i] = (i * sizeof(unsigned long long));
+                // wait until request or finish
+                while(request_queue_head == NULL){
+                        if (is_all_request_sended){
+                                break;
+                        }
+                        pthread_cond_wait(&request_empty_cond,&request_queue_lock);
                 }
-        }
-        
-        MPI_CHECK(MPI_File_seek(*(MPI_File *) fd, req->offset, MPI_SEEK_SET),
-                  "cannot seek offset");
-        if (req->type == 1){
-                MPI_CHECK(MPI_File_write_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
-                "MPI_File_write_at Error.");
-        } else {
-                MPI_CHECK(MPI_File_read_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
-                "MPI_File_read_at Error.");
-        }
 
-        // close file
-        Agios_MPIIO_Close(fd, req);
-        
+                // exit judge
+                if (request_queue_head == NULL){
+                        pthread_mutex_unlock(&request_queue_lock);
+                        break;
+                }
 
-        if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
-                printf("PANIC! release request failed!\n");
+                // consume
+                request_list_t* current_r = request_queue_head;
+                request_info_t* req = current_r->req;
+                request_queue_head = (request_list_t *)request_queue_head->next;
+                free(current_r);
+                pthread_mutex_unlock(&request_queue_lock);
+
+                /*
+                // bind I/O calls to specific API
+                backend = aiori_select(req->api);
+                if (backend == NULL)
+                        ERR_SIMPLE("unrecognized I/O API");
+                */
+
+                IOR_io_buffers ioBuffers;
+                MPI_Status status;
+
+                // open file
+                void *fd = Agios_MPIIO_Open(req);
+
+                // buffer init
+                ioBuffers.buffer = aligned_buffer_alloc(req->transferSize);
+                unsigned long long hi, lo;
+                int fillrank = rand() % req->numTasks;
+                unsigned long long *buf = (unsigned long long *)ioBuffers.buffer;
+                hi = ((unsigned long long)fillrank) << 32;
+                lo = (unsigned long long)req->timeStampSignatureValue;
+                for (size_t i = 0; i < req->transferSize / sizeof(unsigned long long); i++) {
+                        if ((i % 2) == 0) {
+                                /* evens contain MPI rank and time in seconds */
+                                buf[i] = hi | lo;
+                        } else {
+                                /* odds contain offset */
+                                buf[i] = (i * sizeof(unsigned long long));
+                        }
+                }
+                
+                MPI_CHECK(MPI_File_seek(*(MPI_File *) fd, req->offset, MPI_SEEK_SET),
+                        "cannot seek offset");
+                if (req->type == 1){
+                        MPI_CHECK(MPI_File_write_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
+                        "MPI_File_write_at Error.");
+                } else {
+                        MPI_CHECK(MPI_File_read_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
+                        "MPI_File_read_at Error.");
+                }
+
+                // close file
+                Agios_MPIIO_Close(fd, req);
+                
+
+                if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
+                        printf("PANIC! release request failed!\n");
+                }
         }
         return 0;
 }
@@ -2134,12 +2163,31 @@ void * process_thread(void *arg)
 void * process_on_addrequest(int64_t req_id)
 {
         //create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
+        pthread_mutex_lock(&request_queue_lock);
+        request_list_t* new_request = (request_list_t*)malloc(sizeof(MPI_Request));
+        new_request->req = &agios_requests[req_id];
+        new_request->next = NULL;
+
+        // produce
+        if (request_queue_head == NULL){
+                request_queue_head = new_request;
+                request_queue_tail = new_request;
+                pthread_cond_signal(&request_empty_cond);
+        } else{
+                request_queue_tail->next = new_request;
+                request_queue_tail = new_request;
+        }
+
+        pthread_mutex_unlock(&request_queue_lock);
+
+        /*
         int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thread, (void *)&agios_requests[req_id]);
         if (ret != 0) {
                 printf("PANIC! Could not create processing thread for request %ld with code %d\n", req_id, ret);
                 processing_threads[req_id] = -1;
                 //inc_processed_reqnb(); //so the program can end
         }
+        */
         return 0;
 }
 
@@ -2163,7 +2211,15 @@ void run_agios(){
 
         // init& recv
         agios_requests = (request_info_t *)malloc(sizeof(request_info_t)*MAX_REQUESTS);
-        processing_threads = (pthread_t *)malloc(sizeof(pthread_t)*MAX_REQUESTS);
+        processing_threads = (pthread_t *)malloc(sizeof(pthread_t)*MAX_CONSUMER);
+        for (int i = 0; i < MAX_CONSUMER; ++ i){
+                int32_t ret = pthread_create(&(processing_threads[i]), NULL, process_thread, NULL);
+                if (ret != 0) {
+                        printf("PANIC! Could not create processing thread for id %d with code %d\n", i, ret);
+                        processing_threads[i] = -1;
+                }
+        }
+
         for (int i = 0; i < numTasksWorld; ++ i){
             char* buffer = malloc(sizeof(char) * msg_buff_size);
             total_buffer[i] = buffer;
@@ -2199,15 +2255,16 @@ void run_agios(){
                 }
 
                 // put into request list
+                //unpacked_result.queue_id = recv_count;
                 memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));
                 
                 /*
-                printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, queue_id: %d, filename: %s)\x1B[0m\n", 
+                printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, process_id: %d, filename: %s)\x1B[0m\n", 
                         recv_count,
                         agios_requests[recv_count].type,
                         agios_requests[recv_count].len,
                         agios_requests[recv_count].offset,
-                        agios_requests[recv_count].queue_id,
+                        agios_requests[recv_count].process_id,
                         agios_requests[recv_count].filename);
                 fflush(stdout);
                 */
@@ -2227,12 +2284,13 @@ void run_agios(){
                 MPI_Irecv(total_buffer[pro_id], msg_buff_size, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
         }
 
+        pthread_mutex_lock(&request_queue_lock);
+        is_all_request_sended = 1;
+        pthread_cond_broadcast(&request_empty_cond);
+        pthread_mutex_unlock(&request_queue_lock);
+
         // wait for joining
-        for (int32_t i = 0; i < recv_count; i++) {
-                while(processing_threads[i]==(pthread_t*)NULL){
-                        sleep(1);
-                };
-                // skip failed thread
+        for (int32_t i = 0; i < MAX_CONSUMER; i++) {
                 if (processing_threads[i] == -1){
                         continue;
                 }
