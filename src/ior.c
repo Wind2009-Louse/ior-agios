@@ -41,6 +41,7 @@
 /* file scope globals */
 extern char **environ;
 static int totalErrorCount;
+static int sended_requests;
 static const ior_aiori_t *backend;
 
 static void DestroyTests(IOR_test_t *tests_head);
@@ -1270,6 +1271,7 @@ static void TestIoSys(IOR_test_t *test)
                           (&params->timeStampSignatureValue, 1, MPI_UNSIGNED, 0,
                            testComm), "cannot broadcast start time value");
 
+                sended_requests = 0;
                 FillBuffer(ioBuffers.buffer, params, 0, pretendRank);
                 /* use repetition count for number of multiple files */
                 if (params->multiFile)
@@ -1489,6 +1491,15 @@ static void TestIoSys(IOR_test_t *test)
 
                 PrintRepeatEnd();
                 //printf("finish testIoSys\n");
+
+                //printf("[%d]: sended %d requests.\n", rank, sended_requests);
+                //fflush(stdout);
+                void* recv_buffer = malloc(sizeof(char) * params->transferSize);
+                MPI_Status recv_status;
+                for (int i = 0; i < sended_requests; ++ i){
+                        MPI_Recv(recv_buffer, params->transferSize, MPI_BYTE, numTasksWorld, 0, MPI_COMM_WORLD, &recv_status);
+                }
+                free(recv_buffer);
         }
 
         MPI_CHECK(MPI_Comm_free(&testComm), "MPI_Comm_free() error");
@@ -1863,6 +1874,7 @@ static IOR_offset_t WriteOrReadSingle(IOR_offset_t pairCnt, IOR_offset_t *offset
           }
           *errors += CompareBuffers(readCheckBuffer, buffer, transfer, *transferCount, test, READCHECK);
   }
+  sended_requests ++;
   return amtXferred;
 }
 
@@ -2115,17 +2127,17 @@ void * process_thread()
                         ERR_SIMPLE("unrecognized I/O API");
                 */
 
-                IOR_io_buffers ioBuffers;
+                void* ioBuffers;
                 MPI_Status status;
 
                 // open file
                 void *fd = Agios_MPIIO_Open(req);
 
                 // buffer init
-                ioBuffers.buffer = aligned_buffer_alloc(req->transferSize);
+                ioBuffers = malloc(sizeof(char)*req->transferSize);//aligned_buffer_alloc(req->transferSize);
                 unsigned long long hi, lo;
                 int fillrank = rand() % req->numTasks;
-                unsigned long long *buf = (unsigned long long *)ioBuffers.buffer;
+                unsigned long long *buf = (unsigned long long *)ioBuffers;
                 hi = ((unsigned long long)fillrank) << 32;
                 lo = (unsigned long long)req->timeStampSignatureValue;
                 for (size_t i = 0; i < req->transferSize / sizeof(unsigned long long); i++) {
@@ -2150,8 +2162,9 @@ void * process_thread()
 
                 // close file
                 Agios_MPIIO_Close(fd, req);
+                // send buffer
+                MPI_Send(buf, req->len, MPI_BYTE, req->process_id, 0, MPI_COMM_WORLD);
                 
-
                 if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                         printf("PANIC! release request failed!\n");
                 }
