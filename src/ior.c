@@ -2029,7 +2029,7 @@ pthread_mutex_t request_queue_lock=PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t request_empty_cond=PTHREAD_COND_INITIALIZER;
 
 #define MAX_REQUESTS 100000
-#define MAX_CONSUMER 10
+#define MAX_CONSUMER 5000
 request_info_t* agios_requests; /**< the list containing ALL requests generated in this test */
 pthread_t* processing_threads;
 request_list_t* request_queue_head = NULL;
@@ -2212,13 +2212,17 @@ void run_agios(){
         // init& recv
         agios_requests = (request_info_t *)malloc(sizeof(request_info_t)*MAX_REQUESTS);
         processing_threads = (pthread_t *)malloc(sizeof(pthread_t)*MAX_CONSUMER);
+        int created_thread_count = 0;
         for (int i = 0; i < MAX_CONSUMER; ++ i){
                 int32_t ret = pthread_create(&(processing_threads[i]), NULL, process_thread, NULL);
                 if (ret != 0) {
-                        printf("PANIC! Could not create processing thread for id %d with code %d\n", i, ret);
+                        //printf("PANIC! Could not create processing thread for id %d with code %d\n", i, ret);
                         processing_threads[i] = -1;
+                } else {
+                        created_thread_count += 1;
                 }
         }
+        printf("Created %d threads to process.\n", created_thread_count);
 
         for (int i = 0; i < numTasksWorld; ++ i){
             char* buffer = malloc(sizeof(char) * msg_buff_size);
