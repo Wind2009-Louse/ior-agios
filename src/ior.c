@@ -1474,6 +1474,22 @@ static void TestIoSys(IOR_test_t *test)
                         }
                 }
 
+                if (rank == 0){
+                        fprintf(out_resultfile, "\x1B[32msended %d requests.\x1B[0m\n", sended_requests);
+                }
+                double recv_time_start, recv_time_finish;
+                recv_time_start = GetTimeStamp();
+                void* recv_buffer = malloc(sizeof(char) * params->transferSize);
+                MPI_Status recv_status;
+                for (int i = 0; i < sended_requests; ++ i){
+                        MPI_Recv(recv_buffer, params->transferSize, MPI_BYTE, numTasksWorld, 0, MPI_COMM_WORLD, &recv_status);
+                }
+                free(recv_buffer);
+                recv_time_finish = GetTimeStamp();
+                if (rank == 0){
+                        fprintf(out_resultfile, "\x1B[32mReceive Time(s): %.6f\x1B[0m\n", recv_time_finish-recv_time_start);
+                }
+
                 if (!params->keepFile
                     && !(params->errorFound && params->keepFileWithError)) {
                         double start, finish;
@@ -1491,15 +1507,6 @@ static void TestIoSys(IOR_test_t *test)
 
                 PrintRepeatEnd();
                 //printf("finish testIoSys\n");
-
-                //printf("[%d]: sended %d requests.\n", rank, sended_requests);
-                //fflush(stdout);
-                void* recv_buffer = malloc(sizeof(char) * params->transferSize);
-                MPI_Status recv_status;
-                for (int i = 0; i < sended_requests; ++ i){
-                        MPI_Recv(recv_buffer, params->transferSize, MPI_BYTE, numTasksWorld, 0, MPI_COMM_WORLD, &recv_status);
-                }
-                free(recv_buffer);
         }
 
         MPI_CHECK(MPI_Comm_free(&testComm), "MPI_Comm_free() error");
@@ -2040,13 +2047,15 @@ int32_t proceessed_count=0; /**< the number of requests already processed and re
 pthread_mutex_t request_queue_lock=PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t request_empty_cond=PTHREAD_COND_INITIALIZER;
 
-#define MAX_REQUESTS 100000
+#define MAX_REQUESTS 1000000
 #define MAX_CONSUMER 5000
 request_info_t* agios_requests; /**< the list containing ALL requests generated in this test */
 pthread_t* processing_threads;
 request_list_t* request_queue_head = NULL;
 request_list_t* request_queue_tail = NULL;
 int is_all_request_sended = 0;
+
+#define USING_AGIOS
 
 // pack message into char
 int pack_msg(char* packbuffer, request_info_t agios_t){
@@ -2149,7 +2158,7 @@ void * process_thread()
                                 buf[i] = (i * sizeof(unsigned long long));
                         }
                 }
-                
+
                 MPI_CHECK(MPI_File_seek(*(MPI_File *) fd, req->offset, MPI_SEEK_SET),
                         "cannot seek offset");
                 if (req->type == 1){
@@ -2164,10 +2173,11 @@ void * process_thread()
                 Agios_MPIIO_Close(fd, req);
                 // send buffer
                 MPI_Send(buf, req->len, MPI_BYTE, req->process_id, 0, MPI_COMM_WORLD);
-                
+#ifdef USING_AGIOS
                 if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                         printf("PANIC! release request failed!\n");
                 }
+#endif
         }
         return 0;
 }
@@ -2207,11 +2217,12 @@ void * process_on_addrequest(int64_t req_id)
 void run_agios(){
         int recv_count = 0;
         /*start AGIOS*/
-        // print *Error reading agios config file*
+#ifdef USING_AGIOS
         if (!agios_init(process_on_addrequest, NULL, "/GPUFS/sysu_hshen_2/agios/agios-master/agios.conf", numTasksWorld)) {
                 printf("PANIC! Could not initialize AGIOS!\n");
                 return;
         }
+#endif
 
         // wait for msg
         MPI_Request* mpi_request_list = (MPI_Request*)malloc(sizeof(MPI_Request) * numTasksWorld);
@@ -2287,6 +2298,7 @@ void run_agios(){
                 */
 
                 /*give a request to AGIOS*/
+#ifdef USING_AGIOS
                 if(!agios_add_request(
                         agios_requests[recv_count].filename,
                         agios_requests[recv_count].type,
@@ -2296,6 +2308,9 @@ void run_agios(){
                         pro_id)) {
                         printf("PANIC! Agios_add_request failed!\n");
                 }
+#else
+                process_on_addrequest(recv_count);
+#endif
                 recv_count++;
 
                 MPI_Irecv(total_buffer[pro_id], msg_buff_size, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
@@ -2321,7 +2336,9 @@ void run_agios(){
         free(processing_threads);
 
         //end agios, wait for the end of all threads, free stuff
+#ifdef USING_AGIOS
         agios_exit();
+#endif
 
         printf("Agios run and exit successfully with %d requests.\n", recv_count);
 }
