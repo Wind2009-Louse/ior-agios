@@ -260,6 +260,10 @@ typedef struct request_info {
     unsigned int timeStampSignatureValue;
     char filename[100];
     char api[16];
+    int32_t agg_reqnb;
+    int64_t agg_offset;
+    int64_t agg_len;
+    int64_t* agg_reqs;
 } request_info_t;
 
 typedef struct request_list{

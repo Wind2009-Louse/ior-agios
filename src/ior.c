@@ -2055,7 +2055,7 @@ request_list_t* request_queue_head = NULL;
 request_list_t* request_queue_tail = NULL;
 int is_all_request_sended = 0;
 
-#define USING_AGIOS
+//#define USING_AGIOS
 
 // pack message into char
 int pack_msg(char* packbuffer, request_info_t agios_t){
@@ -2099,6 +2099,10 @@ request_info_t unpack_msg(char* packbuffer){
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.timeStampSignatureValue, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.filename, 101, MPI_CHAR, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.api, 17, MPI_CHAR, MPI_COMM_WORLD);
+    result.agg_reqnb = 0;
+    result.agg_offset = 0;
+    result.agg_len = 0;
+    result.agg_reqs = NULL;
     return result;
 }
 
@@ -2171,9 +2175,23 @@ void * process_thread()
 
                 // close file
                 Agios_MPIIO_Close(fd, req);
-                // send buffer
-                MPI_Send(buf, req->len, MPI_BYTE, req->process_id, 0, MPI_COMM_WORLD);
+                // send buffer,如果是聚合后的请求则需要拆开然后发给请求相应buffer的节点
+                if(req->agg_reqnb) {
+                        // char类型更好做offset计算，没别的意思
+                        ioBuffers = (char*)buf;
+                        for(int32_t i = 0; i < req->agg_reqnb; i++) {
+                                request_info_t* tmp = &agios_requests[req->agg_reqs[i]];
+                                MPI_Send(ioBuffers + tmp->offset - req->offset, tmp->len, MPI_BYTE, tmp->process_id, 0, MPI_COMM_WORLD);
+                        }
+                        free(req->agg_reqs);
+                        req->agg_reqs = NULL;
+                        req->agg_reqnb = 0;
+                } else {
+                        MPI_Send(buf, req->len, MPI_BYTE, req->process_id, 0, MPI_COMM_WORLD);
+                }
+                free(ioBuffers);
 #ifdef USING_AGIOS
+                // 因为在agios内部本来就是存的聚合后的请求，因此不需要循环release
                 if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                         printf("PANIC! release request failed!\n");
                 }
@@ -2182,15 +2200,8 @@ void * process_thread()
         return 0;
 }
 
-// called when call agios_add_request
-void * process_on_addrequest(int64_t req_id)
-{
-        //create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
+void add_request_to_queue(request_list_t* new_request) {
         pthread_mutex_lock(&request_queue_lock);
-        request_list_t* new_request = (request_list_t*)malloc(sizeof(MPI_Request));
-        new_request->req = &agios_requests[req_id];
-        new_request->next = NULL;
-
         // produce
         if (request_queue_head == NULL){
                 request_queue_head = new_request;
@@ -2200,9 +2211,18 @@ void * process_on_addrequest(int64_t req_id)
                 request_queue_tail->next = new_request;
                 request_queue_tail = new_request;
         }
-
         pthread_mutex_unlock(&request_queue_lock);
+}
 
+// called when call agios_add_request
+void * process_on_addrequest(int64_t req_id)
+{
+        //create a thread to process this request (so AGIOS does not have to wait for us). Another solution (possibly better depending on the user) would be to have a producer-consumer set up where here we put requests into a ready queue and a fixed number of threads consume them.
+        
+        request_list_t* new_request = (request_list_t*)malloc(sizeof(MPI_Request));
+        new_request->req = &agios_requests[req_id];
+        new_request->next = NULL;
+        add_request_to_queue(new_request);
         /*
         int32_t ret = pthread_create(&(processing_threads[req_id]), NULL, process_thread, (void *)&agios_requests[req_id]);
         if (ret != 0) {
@@ -2214,11 +2234,31 @@ void * process_on_addrequest(int64_t req_id)
         return 0;
 }
 
+// 将被聚合的请求结合成一个发出
+void * process_on_add_agg_request(int64_t* reqs, int32_t reqnb) {
+        // reqs中的请求是被按照offset排好序的，所以可以这样计算
+        request_info_t* first = &agios_requests[reqs[0]], *last = &agios_requests[reqs[reqnb - 1]];
+        int agg_offset = first->offset;
+        int agg_len = last->offset - first->offset + last->len;
+        // 为了尽可能避免对象的复制，直接借用first对象传递给消费者队列
+        first->agg_offset = agg_offset;
+        first->agg_len = agg_len;
+        first->agg_reqnb = reqnb;
+        first->agg_reqs = (int64_t*)malloc(sizeof(int64_t) * reqnb);
+        for(int32_t i = 0; i < reqnb; i++){
+                first->agg_reqs[i] = reqs[i];
+        }
+        request_list_t* new_request = (request_list_t*)malloc(sizeof(MPI_Request));
+        new_request->req = first;
+        new_request->next = NULL;
+        add_request_to_queue(new_request);
+}
+
 void run_agios(){
         int recv_count = 0;
         /*start AGIOS*/
 #ifdef USING_AGIOS
-        if (!agios_init(process_on_addrequest, NULL, "/GPUFS/sysu_hshen_2/agios/agios-master/agios.conf", numTasksWorld)) {
+        if (!agios_init(process_on_addrequest, process_on_add_agg_request, "/GPUFS/sysu_hshen_2/agios/agios-master/agios.conf", numTasksWorld)) {
                 printf("PANIC! Could not initialize AGIOS!\n");
                 return;
         }
@@ -2315,7 +2355,7 @@ void run_agios(){
 
                 MPI_Irecv(total_buffer[pro_id], msg_buff_size, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
         }
-
+        printf("agios end add request while\n");
         pthread_mutex_lock(&request_queue_lock);
         is_all_request_sended = 1;
         pthread_cond_broadcast(&request_empty_cond);
