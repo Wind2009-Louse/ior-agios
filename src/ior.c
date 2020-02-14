@@ -2055,7 +2055,9 @@ request_list_t* request_queue_head = NULL;
 request_list_t* request_queue_tail = NULL;
 int is_all_request_sended = 0;
 
-//#define USING_AGIOS
+int32_t agg_count = 0;
+
+#define USING_AGIOS
 
 // pack message into char
 int pack_msg(char* packbuffer, request_info_t agios_t){
@@ -2147,13 +2149,14 @@ void * process_thread()
                 void *fd = Agios_MPIIO_Open(req);
 
                 // buffer init
-                ioBuffers = malloc(sizeof(char)*req->transferSize);//aligned_buffer_alloc(req->transferSize);
+                int64_t buffer_size = req->agg_reqnb ? req->agg_len : req->transferSize;
+                ioBuffers = malloc(sizeof(char)*(buffer_size));//aligned_buffer_alloc(req->transferSize);
                 unsigned long long hi, lo;
                 int fillrank = rand() % req->numTasks;
                 unsigned long long *buf = (unsigned long long *)ioBuffers;
                 hi = ((unsigned long long)fillrank) << 32;
                 lo = (unsigned long long)req->timeStampSignatureValue;
-                for (size_t i = 0; i < req->transferSize / sizeof(unsigned long long); i++) {
+                for (size_t i = 0; i < buffer_size / sizeof(unsigned long long); i++) {
                         if ((i % 2) == 0) {
                                 /* evens contain MPI rank and time in seconds */
                                 buf[i] = hi | lo;
@@ -2177,11 +2180,19 @@ void * process_thread()
                 Agios_MPIIO_Close(fd, req);
                 // send buffer,如果是聚合后的请求则需要拆开然后发给请求相应buffer的节点
                 if(req->agg_reqnb) {
+
                         // char类型更好做offset计算，没别的意思
                         ioBuffers = (char*)buf;
                         for(int32_t i = 0; i < req->agg_reqnb; i++) {
                                 request_info_t* tmp = &agios_requests[req->agg_reqs[i]];
-                                MPI_Send(ioBuffers + tmp->offset - req->offset, tmp->len, MPI_BYTE, tmp->process_id, 0, MPI_COMM_WORLD);
+                                int len = tmp->len;
+                                int process_id = tmp->process_id;
+                                char* start_buf_add = ioBuffers + tmp->offset - req->offset;
+                                char* tmp_buf = malloc(sizeof(char) * (len + 2));
+                                memcpy(tmp_buf, start_buf_add, sizeof(char) * len);
+                                //printf("aggnb: %d, offset diff: %d, xferSize: %d, len: %d\n", req->agg_reqnb, tmp->offset - req->offset, req->transferSize, len);
+                                MPI_Send(tmp_buf, len, MPI_BYTE, process_id, 0, MPI_COMM_WORLD);
+                                free(tmp_buf);
                         }
                         free(req->agg_reqs);
                         req->agg_reqs = NULL;
@@ -2252,6 +2263,7 @@ void * process_on_add_agg_request(int64_t* reqs, int32_t reqnb) {
         new_request->req = first;
         new_request->next = NULL;
         add_request_to_queue(new_request);
+        agg_count += reqnb;
 }
 
 void run_agios(){
@@ -2294,7 +2306,7 @@ void run_agios(){
             result_list[i] = 0;
             MPI_Irecv(total_buffer[i], msg_buff_size, MPI_PACKED, i, 0, MPI_COMM_WORLD, &mpi_request_list[i]);
         }
-
+        double start_time = GetTimeStamp();
         // round-robin
         int pro_id = 0;
         while(running_count){
@@ -2360,7 +2372,6 @@ void run_agios(){
         is_all_request_sended = 1;
         pthread_cond_broadcast(&request_empty_cond);
         pthread_mutex_unlock(&request_queue_lock);
-
         // wait for joining
         for (int32_t i = 0; i < MAX_CONSUMER; i++) {
                 if (processing_threads[i] == -1){
@@ -2368,7 +2379,8 @@ void run_agios(){
                 }
                 pthread_join(processing_threads[i], NULL);
         }
-
+        double end_time = GetTimeStamp();
+        printf("agios count time: %.8f\n", end_time - start_time);
         free(mpi_request_list);
         free(result_list);
         free(total_buffer);
