@@ -21,9 +21,10 @@ ior_LDADD = libaiori.a
 ior_CPPFLAGS =
 
 extraSOURCES   +=
-extraCPPFLAGS  += -I$HOME/agios/install/include
-extraLDFLAGS   += -L$HOME/agios/install/lib
-extraLDADD     += -lagios -lpthread
+#extraCPPFLAGS  += -I/GPUFS/sysu_hshen_2/agios/install/include
+#extraLDFLAGS   += -L/GPUFS/sysu_hshen_2/agios/install/lib
+#extraLDADD     += -lagios -lpthread
+extraLDADD     += -lpthread
 
 mdtest_SOURCES = mdtest-main.c
 mdtest_LDFLAGS =
