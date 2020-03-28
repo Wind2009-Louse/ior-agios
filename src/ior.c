@@ -2043,30 +2043,41 @@ WriteTimes(IOR_param_t * test, double **timer, int iteration, int writeOrRead)
 
 // #########################################################
 
+//#define USING_AGIOS
+#define USING_MARKOV
+
+#define MAX_REQUESTS 100000
+#define MAX_CONSUMER 5000
+#define BUFFER_SIZE 1024*1024*32
+
 int32_t proceessed_count=0; /**< the number of requests already processed and released rfom agios */
 pthread_mutex_t request_queue_lock=PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t request_empty_cond=PTHREAD_COND_INITIALIZER;
-
-#define MAX_REQUESTS 1000000
-#define MAX_CONSUMER 5000
 request_info_t* agios_requests; /**< the list containing ALL requests generated in this test */
-pthread_t* processing_threads;
-request_list_t* request_queue_head = NULL;
-request_list_t* request_queue_tail = NULL;
-int is_all_request_sended = 0;
-#define BUFFER_SIZE 1024*1024*1024
-char* bust_buffer;
-
-//#define USING_AGIOS
-#define USING_MARKOV
-int64_t* app_stall_io;
-int64_t* app_using_io;
-int_queue_t** app_req_heads;
-int_queue_t** app_req_tails;
+pthread_t* processing_threads; /* consumer threads */
+request_list_t* request_queue_head = NULL; /* head of request queue */
+request_list_t* request_queue_tail = NULL; /* tail of request queue */
+int is_all_request_sended = 0;  /* signal of whether all requests sended */
+int64_t* app_stall_io;  /* io that each app waiting for schedule */
+int64_t* app_using_io;  /* io that each app used to trans from/to disk */
+int_queue_t** app_req_heads; /* head of each app's request id queue */
+int_queue_t** app_req_tails; /* tail of each app's request id queue */
+pthread_mutex_t* app_using_io_locks;  /* lock for app_using_io, called by main thread and consumers */
+int64_t total_bandwidth = 1024*1024*64; /* total bandwidth */
+char* bust_buffer; /* bust buffer for usage */
+int64_t bust_buffer_using = 0; /* size of using bust buffer */
+pthread_mutex_t bust_buffer_lock = PTHREAD_MUTEX_INITIALIZER; /* lock for bust_buffer_using, called by main thread and consumer */
+buffer_record_t* buffer_records; /* record of buffer's using, sorted by ->buffer_offset */
 
 #ifdef USING_AGIOS
 #include <agios.h>
 #endif
+
+void atomic_operation(int64_t* dest, pthread_mutex_t lock, int64_t delta){
+        pthread_mutex_lock(&lock);
+        *dest += delta;
+        pthread_mutex_unlock(&lock);
+}
 
 // pack message into char
 int pack_msg(char* packbuffer, request_info_t agios_t){
@@ -2110,6 +2121,8 @@ request_info_t unpack_msg(char* packbuffer){
     MPI_Unpack(packbuffer, msg_buff_size, &pos, &result.timeStampSignatureValue, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.filename, 101, MPI_CHAR, MPI_COMM_WORLD);
     MPI_Unpack(packbuffer, msg_buff_size, &pos, result.api, 17, MPI_CHAR, MPI_COMM_WORLD);
+    result.use_buffer = 0;
+    result.is_empty = 1;
     return result;
 }
 
@@ -2173,8 +2186,48 @@ void * process_thread()
                 MPI_CHECK(MPI_File_seek(*(MPI_File *) fd, req->offset, MPI_SEEK_SET),
                         "cannot seek offset");
                 if (req->type == 1){
-                        MPI_CHECK(MPI_File_write_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
-                        "MPI_File_write_at Error.");
+                        if (req->use_buffer){
+                                // get lock
+                                pthread_mutex_lock(&bust_buffer_lock);
+                                // check 
+                                int32_t same_piece = 0;
+                                buffer_record_t* record_ptr = buffer_records;
+                                buffer_record_t* empty_ptr = buffer_records; /* record that can have empty, so that you can insert new record after it */
+                                while(record_ptr){
+                                        // check whether the same
+                                        request_info_t* r_req = record_ptr->req;
+                                        if (strcmp(r_req->filename, req->filename) == 0
+                                                && r_req->offset == req->offset 
+                                                && r_req->len == req->len){
+                                                memcpy(&bust_buffer[record_ptr->buffer_offset], ioBuffers, req->len);
+                                                same_piece = 1;
+                                                break;
+                                        }
+                                        // check whether need to update empty_ptr
+                                        buffer_record_t* next_ptr = record_ptr->next;
+                                        if (record_ptr == empty_ptr && next_ptr != NULL){
+                                                if (req->offset < r_req->offset + r_req->len 
+                                                        || req->offset + req->len < next_ptr->req->offset){
+                                                        empty_ptr = empty_ptr->next;
+                                                }
+                                        }
+                                        record_ptr = record_ptr->next;
+                                }
+                                if (same_piece == 0){
+                                        buffer_record_t* new_record = malloc(sizeof(buffer_record_t));
+                                        new_record->req = req;
+                                        new_record->next = empty_ptr->next;
+                                        new_record->buffer_offset = empty_ptr->req->offset + empty_ptr->req->len;
+                                        empty_ptr->next = new_record;
+                                        memcpy(&new_record->buffer_offset, ioBuffers, req->len);
+                                }
+                                // unlock
+                                bust_buffer_using -= req->len;
+                                pthread_mutex_unlock(&bust_buffer_lock);
+                        } else {
+                                MPI_CHECK(MPI_File_write_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
+                                "MPI_File_write_at Error.");
+                        }
                 } else {
                         MPI_CHECK(MPI_File_read_at(*(MPI_File *) fd, req->offset, buf, req->len, MPI_BYTE, &status),
                         "MPI_File_read_at Error.");
@@ -2183,7 +2236,12 @@ void * process_thread()
                 // close file
                 Agios_MPIIO_Close(fd, req);
                 // send buffer
+
                 MPI_Send(buf, req->len, MPI_BYTE, req->process_id, 0, MPI_COMM_WORLD);
+                req->is_empty = 0;
+#ifdef USING_MARKOV
+                atomic_operation(&app_using_io[req->process_id], app_using_io_locks[req->process_id], -(req->len));
+#endif
 #ifdef USING_AGIOS
                 if (!agios_release_request(req->filename, req->type, req->len, req->offset)) {
                         printf("PANIC! release request failed!\n");
@@ -2227,19 +2285,207 @@ void * process_on_addrequest(int64_t req_id)
 
 // markov schedule
 void markov_schedule(){
-        // process all the requests in the queue
-        for (int i = 0; i < numTasksWorld; ++ i){
-                while(app_req_heads[i]){
-                        process_on_addrequest(app_req_heads[i]->num);
-                        app_req_heads[i] = app_req_heads[i]->next;
-                }
-                app_req_heads[i] = NULL;
-                app_req_tails[i] = NULL;
+#ifndef USING_MARKOV
+        return;
+#endif
+        int64_t total_stall_io = 0;
+        int64_t total_using_io = 0;
+        int64_t* per_io = malloc(sizeof(int64_t) * numTasksWorld);
+        for (int pro_id = 0; pro_id < numTasksWorld; ++ pro_id){
+                per_io[pro_id] = app_stall_io[pro_id] + app_using_io[pro_id];
+                total_using_io += per_io[pro_id] - app_stall_io[pro_id];
+                total_stall_io += app_stall_io[pro_id];
         }
+        int64_t total_io = total_stall_io + total_using_io;
+        if (total_using_io + total_stall_io <= total_bandwidth){
+                // process all the requests in the queue
+                for (int pro_id = 0; pro_id < numTasksWorld; ++ pro_id){
+                        while(app_req_heads[pro_id]){
+                                process_on_addrequest(app_req_heads[pro_id]->num);
+                                int64_t delta = agios_requests[app_req_heads[pro_id]->num].len;
+                                app_stall_io[pro_id] -= delta;
+                                atomic_operation(&app_using_io[pro_id], app_using_io_locks[pro_id], delta);
+
+                                int_queue_t* temp = app_req_heads[pro_id];
+                                app_req_heads[pro_id] = app_req_heads[pro_id]->next;
+                                free(temp);
+                        }
+                        app_req_heads[pro_id] = NULL;
+                        app_req_tails[pro_id] = NULL;
+                }
+                // clear the bust buffer
+                int64_t remain_io = total_bandwidth - total_using_io - total_stall_io;
+                pthread_mutex_lock(&bust_buffer_lock);
+                buffer_record_t* record_ptr = buffer_records;
+                buffer_record_t* last_ptr = buffer_records;
+                while(remain_io > 0 && record_ptr){
+                        // write
+                        if (record_ptr->req->len <= remain_io && record_ptr->req->type == 1){
+                                MPI_Status status;
+                                void *fd = Agios_MPIIO_Open(record_ptr->req);
+                                // get buffer from bust buffer
+                                MPI_CHECK(MPI_File_seek(*(MPI_File *) fd, record_ptr->req->offset, MPI_SEEK_SET),
+                                        "cannot seek offset");
+                                MPI_CHECK(MPI_File_write_at(*(MPI_File *) fd, 
+                                        record_ptr->req->offset, 
+                                        &bust_buffer[record_ptr->buffer_offset], 
+                                        record_ptr->req->len, 
+                                        MPI_BYTE, 
+                                        &status),
+                                        "MPI_File_write_at Error.");
+                                Agios_MPIIO_Close(fd, record_ptr->req);
+                                
+                                // remove record and jump to next record
+                                buffer_record_t* temp = record_ptr;
+                                if (record_ptr == buffer_records){
+                                        buffer_records = record_ptr->next;
+                                        last_ptr = buffer_records;
+                                        record_ptr = buffer_records;
+                                } else {
+                                        last_ptr->next = record_ptr->next;
+                                        record_ptr = record_ptr->next;
+                                }
+                                free(temp);
+
+                                remain_io -= record_ptr->req->len;
+                                bust_buffer_using -= record_ptr->req->len;
+                        } else {
+                                // jump to next record
+                                last_ptr = record_ptr;
+                                record_ptr = record_ptr->next;
+                        }
+                }
+                pthread_mutex_unlock(&bust_buffer_lock);
+        } else {
+                int stall_count = 0;
+/*
+                for (int i = 0; i < numTasksWorld; ++ i){
+                        int_queue_t* app_queues_ptr = app_req_heads[i];
+                        while(app_queues_ptr){
+                                stall_count ++;
+                                app_queues_ptr = app_queues_ptr->next;
+                        }
+                }
+                printf("stall count: %d\r\n", stall_count);
+                printf("total_stall_io: %d\r\n", total_stall_io);
+                printf("total_using_io: %d\r\n", total_using_io);
+                fflush(stdout);
+*/
+                // calculate dist
+                double* dist = malloc(sizeof(double) * total_io);
+                memset(dist, 0.0, sizeof(double) * total_io);
+                dist[0] = 1.0;
+                // simulation, assume Pi=0.5
+                double p_i = 0.5;
+                // and average bandwidth
+                for (int pro_id = 0; pro_id < numTasksWorld; ++ pro_id){
+                        int64_t app_bandwidth = per_io[pro_id];
+                        for (int k = 0; k < app_bandwidth; ++ k){
+                                dist[k] *= (1-p_i);
+                        }
+                        for (int k = app_bandwidth; k < total_io; ++ k){
+                                dist[k] = (1-p_i) * dist[k] + p_i * dist[k - app_bandwidth];
+                        }
+                }
+
+                // calculate full possibility
+                double full_poss = 0;
+                for (int k = BUFFER_SIZE + total_bandwidth - bust_buffer_using; k < total_io; ++ k){
+                        full_poss += dist[k];
+                }
+                int checkfirst_pro = rand() % numTasksWorld;
+                int check_pro = (checkfirst_pro + 1) % numTasksWorld;
+                int64_t remain_bandwidth = total_bandwidth - total_using_io;
+                int64_t remain_buffer = BUFFER_SIZE - bust_buffer_using;
+                int64_t m_count = 0;
+                int64_t i_count = 0;
+                pthread_mutex_lock(&bust_buffer_lock);
+                while(check_pro != checkfirst_pro && remain_bandwidth > 0 && remain_buffer > 0){
+                        // check whether schedule
+                        int_queue_t* app_queues_ptr = app_req_heads[check_pro];
+                        int_queue_t* app_queues_last = NULL;
+                        while(app_queues_ptr){
+                                request_info_t req = agios_requests[app_queues_ptr->num];
+                                i_count ++;
+                                // use bandwidth
+                                if (req.len <= remain_bandwidth){
+                                        // apply
+                                        m_count ++;
+                                        process_on_addrequest(app_req_heads[check_pro]->num);
+                                        remain_bandwidth -= req.len;
+                                        app_stall_io[check_pro] -= req.len;
+                                        atomic_operation(&app_using_io[check_pro], app_using_io_locks[check_pro], req.len);
+
+                                        // remove from list
+                                        int_queue_t* temp = app_queues_ptr;
+                                        // head check
+                                        if (app_queues_ptr == app_req_heads[check_pro]){
+                                                app_req_heads[check_pro] = app_queues_ptr->next;
+                                        } else {
+                                                app_queues_last->next = app_queues_ptr->next;
+                                        }
+                                        // tail check
+                                        if (app_queues_ptr == app_req_tails[check_pro]){
+                                                app_req_tails[check_pro] = app_queues_last;
+                                        }
+                                        app_queues_ptr = app_queues_ptr->next;
+                                        free(temp);
+                                // use buffer
+                                } else if (req.type == 1 && req.len < remain_buffer){
+                                        double random_poss = rand() % 10000;
+                                        double bound_poss = (1 - full_poss) * pow(full_poss,i_count - m_count);
+                                        // not selected
+                                        if (random_poss > bound_poss){
+                                                app_queues_last = app_queues_ptr;
+                                                app_queues_ptr = app_queues_ptr->next;
+                                                continue;
+                                        }
+                                        printf("%d use buffer.\r\n", app_req_heads[check_pro]->num);
+                                        fflush(stdout);
+
+                                        // use bust buffer to apply
+                                        agios_requests[app_queues_ptr->num].use_buffer = 1;
+                                        process_on_addrequest(app_req_heads[check_pro]->num);
+                                        remain_buffer -= req.len;
+                                        bust_buffer_using += req.len;
+                                        app_stall_io[check_pro] -= req.len;
+
+                                        // remove from list
+                                        int_queue_t* temp = app_queues_ptr;
+                                        // head check
+                                        if (app_queues_ptr == app_req_heads[check_pro]){
+                                                app_req_heads[check_pro] = app_queues_ptr->next;
+                                        } else {
+                                                app_queues_last->next = app_queues_ptr->next;
+                                        }
+                                        // tail check
+                                        if (app_queues_ptr == app_req_tails[check_pro]){
+                                                app_req_tails[check_pro] = app_queues_last;
+                                        }
+                                        app_queues_ptr = app_queues_ptr->next;
+                                        free(temp);
+
+                                // jump to next one
+                                } else {
+                                        app_queues_last = app_queues_ptr;
+                                        app_queues_ptr = app_queues_ptr->next;
+                                }
+                        }
+
+                        // continue
+                        check_pro = (check_pro + 1) % numTasksWorld;
+                }
+
+                pthread_mutex_unlock(&bust_buffer_lock);
+                // free dist
+                free(dist);
+        }
+        free(per_io);
 }
 
 void run_agios(){
         int recv_count = 0;
+        int recv_index = 0;
         /*start AGIOS*/
 #ifdef USING_AGIOS
         if (!agios_init(process_on_addrequest, NULL, "/GPUFS/sysu_hshen_2/agios/agios-master/agios.conf", numTasksWorld)) {
@@ -2259,6 +2505,7 @@ void run_agios(){
 
         // init& recv
         agios_requests = (request_info_t *)malloc(sizeof(request_info_t)*MAX_REQUESTS);
+        memset(agios_requests, 0, sizeof(request_info_t)*MAX_REQUESTS);
         processing_threads = (pthread_t *)malloc(sizeof(pthread_t)*MAX_CONSUMER);
         bust_buffer = (char*)malloc(sizeof(char) * BUFFER_SIZE);
         int created_thread_count = 0;
@@ -2279,9 +2526,12 @@ void run_agios(){
         memset(app_using_io, 0, sizeof(int64_t) * numTasksWorld);
         app_req_heads = malloc(sizeof(int_queue_t*) * numTasksWorld);
         app_req_tails = malloc(sizeof(int_queue_t*) * numTasksWorld);
+        app_using_io_locks = malloc(sizeof(pthread_mutex_t) * numTasksWorld);
+        buffer_records = NULL;
         for (int i = 0; i < numTasksWorld; ++ i){
                 app_req_heads[i] = NULL;
                 app_req_tails[i] = NULL;
+                pthread_mutex_init(&app_using_io_locks[i], NULL);
         }
 #endif
 
@@ -2294,11 +2544,17 @@ void run_agios(){
 
         // round-robin
         int pro_id = 0;
+        int schedule_poss = 10;
         while(running_count){
                 pro_id = (pro_id + 1) % (numTasksWorld + 1);
                 // schedule
                 if (pro_id == numTasksWorld){
-                        markov_schedule();
+                        if (rand() % 100 < schedule_poss){
+                                markov_schedule();
+                                schedule_poss = 10;
+                        } else {
+                                schedule_poss += 10;
+                        }
                         continue;
                 }
                 // skip if exit
@@ -2324,37 +2580,43 @@ void run_agios(){
                         continue;
                 }
 
+                // circular array
+                while (agios_requests[recv_index].is_empty == 1){
+                        sleep(0.01);
+                }
+
                 // put into request list
-                //unpacked_result.queue_id = recv_count;
-                memcpy(&agios_requests[recv_count], &unpacked_result, sizeof(request_info_t));
+                //unpacked_result.queue_id = recv_index;
+                memcpy(&agios_requests[recv_index], &unpacked_result, sizeof(request_info_t));
 
                 /*
                 printf("\x1B[32mID%d(type: %d, len: %lld, offset: %lld, process_id: %d, filename: %s)\x1B[0m\n", 
-                        recv_count,
-                        agios_requests[recv_count].type,
-                        agios_requests[recv_count].len,
-                        agios_requests[recv_count].offset,
-                        agios_requests[recv_count].process_id,
-                        agios_requests[recv_count].filename);
+                        recv_index,
+                        agios_requests[recv_index].type,
+                        agios_requests[recv_index].len,
+                        agios_requests[recv_index].offset,
+                        agios_requests[recv_index].process_id,
+                        agios_requests[recv_index].filename);
                 fflush(stdout);
                 */
 
                 /*give a request to AGIOS*/
 #ifdef USING_AGIOS
                 if(!agios_add_request(
-                        agios_requests[recv_count].filename,
-                        agios_requests[recv_count].type,
-                        agios_requests[recv_count].offset,
-                        agios_requests[recv_count].len, 
-                        recv_count,
+                        agios_requests[recv_index].filename,
+                        agios_requests[recv_index].type,
+                        agios_requests[recv_index].offset,
+                        agios_requests[recv_index].len, 
+                        recv_index,
                         pro_id)) {
                         printf("PANIC! Agios_add_request failed!\n");
                 }
 #else
 #ifdef USING_MARKOV
                 // Add to queue
+                app_stall_io[pro_id] += agios_requests[recv_index].len;
                 int_queue_t* new_request = (int_queue_t*)malloc(sizeof(int_queue_t));
-                new_request->num = recv_count;
+                new_request->num = recv_index;
                 new_request->next = NULL;
                 if (app_req_heads[pro_id] == NULL){
                         app_req_heads[pro_id] = new_request;
@@ -2364,10 +2626,11 @@ void run_agios(){
                         app_req_tails[pro_id] = new_request;
                 }
 #else
-                process_on_addrequest(recv_count);
+                process_on_addrequest(recv_index);
 #endif
 #endif
                 recv_count++;
+                recv_index = (recv_index + 1) % MAX_REQUESTS;
 
                 MPI_Irecv(total_buffer[pro_id], msg_buff_size, MPI_PACKED, pro_id, 0, MPI_COMM_WORLD, &mpi_request_list[pro_id]);
         }
@@ -2396,12 +2659,17 @@ void run_agios(){
         free(app_using_io);
         for (int i = 0; i < numTasksWorld; ++ i){
                 free(app_req_heads[i]);
+                free(app_req_tails[i]);
+                pthread_mutex_destroy(&app_using_io_locks[i]);
         }
         free(app_req_heads);
-        for (int i = 0; i < numTasksWorld; ++ i){
-                free(app_req_tails[i]);
-        }
         free(app_req_tails);
+        free(app_using_io_locks);
+        while(buffer_records){
+                buffer_record_t* temp = buffer_records;
+                buffer_records = buffer_records->next;
+                free(temp);
+        }
 #endif
 
         //end agios, wait for the end of all threads, free stuff

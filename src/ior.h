@@ -260,6 +260,8 @@ typedef struct request_info {
     unsigned int timeStampSignatureValue;
     char filename[100];
     char api[16];
+    char use_buffer;
+    char is_empty;
 } request_info_t;
 
 typedef struct request_list{
@@ -271,6 +273,12 @@ typedef struct int_queue{
     int num;
     struct int_queue* next;
 }int_queue_t;
+
+typedef struct buffer_record{
+    struct request_info* req;
+    int32_t buffer_offset;
+    struct buffer_record* next;
+}buffer_record_t;
 
 int pack_msg(char* packbuffer, request_info_t agios_t);
 request_info_t unpack_msg(char* packbuffer);
